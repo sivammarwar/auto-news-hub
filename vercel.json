@@ -15,6 +15,10 @@
       {
         "path": "/api/cron/fetch-history",
         "schedule": "30 14 * * 6"
+      },
+      {
+        "path": "/api/cron/cleanup-database",
+        "schedule": "0 2 * * *"
       }
     ]
   }
