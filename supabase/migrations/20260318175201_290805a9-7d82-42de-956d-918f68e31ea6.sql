@@ -70,3 +70,75 @@ FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 CREATE TRIGGER update_settings_updated_at
 BEFORE UPDATE ON public.settings
 FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+-- Supabase Migration: Add article images support (updated - skips duplicates)
+
+-- Create article_images table to store multiple images per article
+CREATE TABLE IF NOT EXISTS public.article_images (
+  id BIGSERIAL PRIMARY KEY,
+  article_id BIGINT NOT NULL REFERENCES public.articles(id) ON DELETE CASCADE,
+  image_url TEXT NOT NULL,
+  alt_text TEXT,
+  position INTEGER NOT NULL DEFAULT 0,
+  width INTEGER DEFAULT 1200,
+  height INTEGER,
+  size_kb INTEGER,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for article_images
+CREATE INDEX IF NOT EXISTS idx_article_images_article_id ON public.article_images(article_id);
+CREATE INDEX IF NOT EXISTS idx_article_images_position ON public.article_images(position);
+
+-- Enable RLS on article_images
+ALTER TABLE public.article_images ENABLE ROW LEVEL SECURITY;
+
+-- Create RLS policies for article_images
+-- Drop existing policies if they exist (optional - comment out if not needed)
+-- DROP POLICY IF EXISTS "Allow public read access to article_images" ON public.article_images;
+-- DROP POLICY IF EXISTS "Allow authenticated users to manage images" ON public.article_images;
+
+CREATE POLICY "Allow public read access to article_images"
+  ON public.article_images
+  FOR SELECT
+  USING (true);
+
+CREATE POLICY "Allow authenticated users to manage images"
+  ON public.article_images
+  FOR ALL
+  USING (auth.role() = 'authenticated');
+
+-- Add new columns to articles table (IF NOT EXISTS)
+ALTER TABLE public.articles
+ADD COLUMN IF NOT EXISTS is_draft BOOLEAN DEFAULT TRUE;
+
+ALTER TABLE public.articles
+ADD COLUMN IF NOT EXISTS admin_notes TEXT;
+
+ALTER TABLE public.articles
+ADD COLUMN IF NOT EXISTS scheduled_publish_date TIMESTAMP WITH TIME ZONE;
+
+-- Create index for is_draft (IF NOT EXISTS)
+CREATE INDEX IF NOT EXISTS idx_articles_is_draft ON public.articles(is_draft);
+
+-- Add comment
+COMMENT ON TABLE article_images IS 'Stores multiple images for each article - supports 4-5 images per article at 1200px minimum width';
+
+-- Verify migration
+SELECT 
+  'article_images table' as check_item,
+  EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'article_images') as exists
+UNION ALL
+SELECT 
+  'is_draft column',
+  EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'articles' AND column_name = 'is_draft')
+UNION ALL
+SELECT 
+  'admin_notes column',
+  EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'articles' AND column_name = 'admin_notes')
+UNION ALL
+SELECT 
+  'scheduled_publish_date column',
+  EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'articles' AND column_name = 'scheduled_publish_date');

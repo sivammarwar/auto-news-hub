@@ -1,5 +1,5 @@
-// pages/api/cron/fetch-news.js
-// This is the main cron job that runs 3x daily to fetch and process news
+// api/cron/fetch-news.js
+// Updated: Creates DRAFT articles that need images before publishing
 
 import axios from 'axios';
 import xml2js from 'xml2js';
@@ -73,9 +73,9 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // Insert raw articles into database
+      // Insert raw articles into database AS DRAFTS
       const insertedData = await insertArticles(uniqueArticles);
-      console.log(`   ✓ Inserted ${insertedData.count} articles`);
+      console.log(`   ✓ Inserted ${insertedData.count} draft articles`);
       totalInserted += insertedData.count;
 
       // Process summaries and scores asynchronously (don't wait for this)
@@ -90,13 +90,14 @@ export default async function handler(req, res) {
     }
 
     console.log(`\n=== CRON JOB COMPLETED ===`);
-    console.log(`Total articles inserted: ${totalInserted}\n`);
+    console.log(`Total draft articles created: ${totalInserted}\n`);
+    console.log('📋 Visit /admin panel to add images and publish articles\n');
 
     return res.status(200).json({
       success: true,
       articlesInserted: totalInserted,
       timestamp: timestamp,
-      message: `Successfully processed ${totalInserted} new articles`
+      message: `Successfully created ${totalInserted} draft articles. Visit admin panel to add images and publish.`
     });
 
   } catch (error) {
@@ -225,7 +226,9 @@ async function insertArticles(articles) {
           published_date: a.publishedDate.toISOString(),
           summary: 'Processing...', // Will be updated by async process
           score: 5.0, // Default score
-          is_published: false
+          is_published: false,
+          is_draft: true,  // 👈 NEW: Mark as draft
+          admin_notes: '⏳ Waiting for images to be added'  // 👈 NEW: Admin note
         }))
       )
       .select('id');
