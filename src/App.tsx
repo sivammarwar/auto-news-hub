@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import Index from "./pages/Index";
 import ArticlePage from "./pages/ArticlePage";
 import CategoryPage from "./pages/CategoryPage";
+import AdminLogin from "./pages/AdminLogin";
 import AdminPage from "./pages/Adminpage";
 import NotFound from "./pages/NotFound";
 
@@ -21,7 +22,8 @@ const App = () => (
           <Route path="/" element={<Index />} />
           <Route path="/article/:id" element={<ArticlePage />} />
           <Route path="/category/:slug" element={<CategoryPage />} />
-          <Route path="/admin" element={<AdminPage />} />
+          <Route path="/admin-login" element={<AdminLogin />} />
+          <Route path="/admin-panel" element={<AdminPage />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
