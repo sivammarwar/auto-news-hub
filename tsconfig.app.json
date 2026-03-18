@@ -31,5 +31,5 @@
   },
   "include": [
     "src"
-, "pages/api"  ]
+, "pages/api", "api/cron/cleanup-database.js", "api/sitemap.xml.js"  ]
 }
