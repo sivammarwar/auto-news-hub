@@ -7,7 +7,7 @@ import Index from "./pages/Index";
 import ArticlePage from "./pages/ArticlePage";
 import CategoryPage from "./pages/CategoryPage";
 import AdminLogin from "./pages/AdminLogin";
-import AdminPage from "./pages/Adminpage";
+import AdminPage from "./pages/AdminPageNew";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
