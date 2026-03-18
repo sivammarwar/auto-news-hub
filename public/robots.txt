@@ -1,14 +1,30 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+
+# Sitemap location - tells Google where to find your sitemap
+Sitemap: https://auto-news-hub.vercel.app/api/sitemap.xml
+
+# Google-specific crawling instructions
 User-agent: Googlebot
 Allow: /
+Priority: 1
 
+# Bing
 User-agent: Bingbot
 Allow: /
 
-User-agent: Twitterbot
-Allow: /
+# Block bad bots
+User-agent: MJ12bot
+Disallow: /
 
-User-agent: facebookexternalhit
-Allow: /
+User-agent: AhrefsBot
+Disallow: /
 
-User-agent: *
-Allow: /
+User-agent: SemrushBot
+Disallow: /
+
+# Crawl delay (milliseconds between requests)
+# Not required but helpful for server resources
+# 0 means no delay
+Crawl-delay: 0
