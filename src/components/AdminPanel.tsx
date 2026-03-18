@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Upload, Trash2, Eye, Edit2, Check, X } from 'lucide-react';
+import { Upload, Trash2 } from 'lucide-react';
 
 interface Article {
   id: number;
@@ -27,7 +27,7 @@ interface ArticleImage {
   height?: number;
 }
 
-export function AdminPanel() {
+export default function AdminPanel() {
   const [articles, setArticles] = useState<Article[]>([]);
   const [selectedArticle, setSelectedArticle] = useState<Article | null>(null);
   const [images, setImages] = useState<ArticleImage[]>([]);
@@ -35,6 +35,7 @@ export function AdminPanel() {
   const [uploading, setUploading] = useState(false);
   const [adminNotes, setAdminNotes] = useState('');
   const [filter, setFilter] = useState<'draft' | 'published' | 'all'>('draft');
+  const [error, setError] = useState<string | null>(null);
 
   // Fetch unpublished articles
   useEffect(() => {
@@ -43,6 +44,7 @@ export function AdminPanel() {
 
   const fetchArticles = async () => {
     setLoading(true);
+    setError(null);
     try {
       let query = supabase
         .from('articles')
@@ -55,11 +57,12 @@ export function AdminPanel() {
         query = query.eq('is_published', true);
       }
 
-      const { data, error } = await query.limit(50);
-      if (error) throw error;
+      const { data, error: err } = await query.limit(50);
+      if (err) throw err;
       setArticles(data || []);
-    } catch (error) {
-      console.error('Error fetching articles:', error);
+    } catch (err) {
+      console.error('Error fetching articles:', err);
+      setError('Failed to fetch articles');
     } finally {
       setLoading(false);
     }
@@ -71,16 +74,17 @@ export function AdminPanel() {
     
     // Fetch images for this article
     try {
-      const { data, error } = await supabase
+      const { data, error: err } = await supabase
         .from('article_images')
         .select('*')
         .eq('article_id', article.id)
         .order('position', { ascending: true });
       
-      if (error) throw error;
+      if (err) throw err;
       setImages(data || []);
-    } catch (error) {
-      console.error('Error fetching images:', error);
+    } catch (err) {
+      console.error('Error fetching images:', err);
+      setError('Failed to fetch images');
     }
   };
 
@@ -89,13 +93,14 @@ export function AdminPanel() {
 
     const file = e.target.files[0];
     setUploading(true);
+    setError(null);
 
     try {
       // Upload to Supabase Storage
       const timestamp = Date.now();
       const fileName = `${selectedArticle.id}/${timestamp}-${file.name}`;
       
-      const { error: uploadError, data } = await supabase.storage
+      const { error: uploadError } = await supabase.storage
         .from('article-images')
         .upload(fileName, file, { upsert: true });
 
@@ -109,28 +114,37 @@ export function AdminPanel() {
       // Get file dimensions
       const img = new Image();
       img.onload = async () => {
-        // Save image metadata to database
-        const { error: dbError } = await supabase
-          .from('article_images')
-          .insert({
-            article_id: selectedArticle.id,
-            image_url: publicUrl,
-            position: images.length,
-            width: img.width,
-            height: img.height,
-            size_kb: Math.round(file.size / 1024),
-            alt_text: `Article image for ${selectedArticle.title}`
-          });
+        try {
+          // Save image metadata to database
+          const { error: dbError } = await supabase
+            .from('article_images')
+            .insert({
+              article_id: selectedArticle.id,
+              image_url: publicUrl,
+              position: images.length,
+              width: img.width,
+              height: img.height,
+              size_kb: Math.round(file.size / 1024),
+              alt_text: `Article image for ${selectedArticle.title}`
+            });
 
-        if (dbError) throw dbError;
+          if (dbError) throw dbError;
 
-        // Refresh images
-        await selectArticle(selectedArticle);
+          // Refresh images
+          await selectArticle(selectedArticle);
+          setError(null);
+        } catch (err) {
+          console.error('Error saving image metadata:', err);
+          setError('Failed to save image');
+        }
+      };
+      img.onerror = () => {
+        setError('Failed to load image');
       };
       img.src = publicUrl;
-    } catch (error) {
-      console.error('Error uploading image:', error);
-      alert('Failed to upload image');
+    } catch (err) {
+      console.error('Error uploading image:', err);
+      setError('Failed to upload image');
     } finally {
       setUploading(false);
     }
@@ -140,15 +154,17 @@ export function AdminPanel() {
     if (!confirm('Delete this image?')) return;
 
     try {
-      const { error } = await supabase
+      const { error: err } = await supabase
         .from('article_images')
         .delete()
         .eq('id', imageId);
 
-      if (error) throw error;
+      if (err) throw err;
       setImages(images.filter(img => img.id !== imageId));
-    } catch (error) {
-      console.error('Error deleting image:', error);
+      setError(null);
+    } catch (err) {
+      console.error('Error deleting image:', err);
+      setError('Failed to delete image');
     }
   };
 
@@ -156,23 +172,30 @@ export function AdminPanel() {
     if (!selectedArticle) return;
 
     try {
-      const { error } = await supabase
+      const { error: err } = await supabase
         .from('articles')
         .update({ admin_notes: adminNotes })
         .eq('id', selectedArticle.id);
 
-      if (error) throw error;
+      if (err) throw err;
       alert('Notes saved!');
-    } catch (error) {
-      console.error('Error saving notes:', error);
+      setError(null);
+    } catch (err) {
+      console.error('Error saving notes:', err);
+      setError('Failed to save notes');
     }
   };
 
   const publishArticle = async () => {
     if (!selectedArticle) return;
 
+    if (images.length < 4) {
+      setError(`Need at least 4 images. You have ${images.length}.`);
+      return;
+    }
+
     try {
-      const { error } = await supabase
+      const { error: err } = await supabase
         .from('articles')
         .update({
           is_published: true,
@@ -181,12 +204,14 @@ export function AdminPanel() {
         })
         .eq('id', selectedArticle.id);
 
-      if (error) throw error;
+      if (err) throw err;
       alert('Article published!');
       fetchArticles();
       setSelectedArticle(null);
-    } catch (error) {
-      console.error('Error publishing article:', error);
+      setError(null);
+    } catch (err) {
+      console.error('Error publishing article:', err);
+      setError('Failed to publish article');
     }
   };
 
@@ -197,7 +222,7 @@ export function AdminPanel() {
         <Card className="p-4">
           <h2 className="text-xl font-bold mb-4">Articles</h2>
           
-          <div className="flex gap-2 mb-4">
+          <div className="flex gap-2 mb-4 flex-wrap">
             {(['draft', 'published', 'all'] as const).map(f => (
               <button
                 key={f}
@@ -213,6 +238,14 @@ export function AdminPanel() {
             ))}
           </div>
 
+          {error && (
+            <div className="mb-4 p-3 bg-red-100 text-red-700 text-sm rounded">
+              {error}
+            </div>
+          )}
+
+          {loading && <p className="text-gray-600 text-sm">Loading...</p>}
+
           <div className="space-y-2 max-h-[600px] overflow-y-auto">
             {articles.map(article => (
               <button
@@ -226,7 +259,7 @@ export function AdminPanel() {
               >
                 <p className="font-semibold text-sm truncate">{article.title}</p>
                 <p className="text-xs text-gray-600">{article.category}</p>
-                <p className="text-xs text-gray-500">Score: {article.score}/10</p>
+                <p className="text-xs text-gray-500">Score: {article.score?.toFixed(1) || 'N/A'}/10</p>
               </button>
             ))}
           </div>
@@ -247,23 +280,20 @@ export function AdminPanel() {
                   <strong>Category:</strong> {selectedArticle.category}
                 </div>
                 <div>
-                  <strong>Score:</strong> {selectedArticle.score}/10
+                  <strong>Score:</strong> {selectedArticle.score?.toFixed(1) || 'N/A'}/10
                 </div>
                 <div className="col-span-2">
                   <strong>Source:</strong> {selectedArticle.source_name}
                 </div>
               </div>
 
-              <div className="flex gap-2">
-                <Button
-                  onClick={publishArticle}
-                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
-                  disabled={images.length < 4}
-                >
-                  <Check size={16} />
-                  Publish {images.length < 4 && `(need ${4 - images.length} more images)`}
-                </Button>
-              </div>
+              <Button
+                onClick={publishArticle}
+                className="w-full bg-green-600 hover:bg-green-700 text-white"
+                disabled={images.length < 4}
+              >
+                Publish {images.length < 4 && `(need ${4 - images.length} more images)`}
+              </Button>
             </Card>
 
             {/* Admin Notes */}
@@ -279,6 +309,7 @@ export function AdminPanel() {
                 onClick={updateAdminNotes}
                 variant="outline"
                 size="sm"
+                className="w-full"
               >
                 Save Notes
               </Button>
@@ -310,10 +341,10 @@ export function AdminPanel() {
                 </div>
               </label>
 
-              {uploading && <p className="text-center text-blue-600">Uploading...</p>}
+              {uploading && <p className="text-center text-blue-600 text-sm mb-4">Uploading...</p>}
 
               {/* Images Grid */}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3 mb-4">
                 {images.map(image => (
                   <div key={image.id} className="relative group">
                     <img
@@ -330,15 +361,15 @@ export function AdminPanel() {
                       </button>
                     </div>
                     <p className="text-xs text-gray-600 mt-1">
-                      {image.width}x{image.height}
+                      {image.width}x{image.height || '?'}
                     </p>
                   </div>
                 ))}
               </div>
 
               {images.length < 4 && (
-                <p className="text-sm text-yellow-600 mt-3">
-                  ⚠️ Need at least 4 images to publish
+                <p className="text-sm text-yellow-600">
+                  ⚠️ Need at least 4 images to publish ({4 - images.length} more needed)
                 </p>
               )}
             </Card>
