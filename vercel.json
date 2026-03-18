@@ -28,11 +28,7 @@
     "crons": [
       {
         "path": "/api/cron/fetch-news",
-        "schedule": "0 5,11,17 * * *"
-      },
-      {
-        "path": "/api/cron/generate-site",
-        "schedule": "0 6,12,18 * * *"
+        "schedule": "0 6 * * *"
       },
       {
         "path": "/api/cron/fetch-viral",
