@@ -2,12 +2,20 @@
     "buildCommand": "npm run build",
     "outputDirectory": "dist",
     "devCommand": "npm run dev",
+    "framework": "vite",
     "functions": {
       "pages/api/**/*.js": {
+        "runtime": "nodejs20.x",
         "memory": 1024,
-        "maxDuration": 60
+        "maxDuration": 300
       }
     },
+    "routes": [
+      {
+        "src": "/api/(.*)",
+        "dest": "/api/$1"
+      }
+    ],
     "crons": [
       {
         "path": "/api/cron/fetch-news",
