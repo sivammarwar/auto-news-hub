@@ -5,22 +5,22 @@
     "framework": "vite",
     "functions": {
       "api/cron/fetch-news.js": {
-        "runtime": "nodejs20.x",
+        "runtime": "nodejs20",
         "memory": 1024,
         "maxDuration": 300
       },
       "api/cron/fetch-viral.js": {
-        "runtime": "nodejs20.x",
+        "runtime": "nodejs20",
         "memory": 1024,
         "maxDuration": 300
       },
       "api/cron/fetch-history.js": {
-        "runtime": "nodejs20.x",
+        "runtime": "nodejs20",
         "memory": 1024,
         "maxDuration": 300
       },
       "api/cron/generate-site.js": {
-        "runtime": "nodejs20.x",
+        "runtime": "nodejs20",
         "memory": 1024,
         "maxDuration": 300
       }
