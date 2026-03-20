@@ -332,3 +332,88 @@ ALTER TABLE public.articles
 CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_source_url_unique
   ON public.articles(source_url)
   WHERE source_url IS NOT NULL;
+
+-- ============================================================================
+-- FIX: Allow anon key to read/write/delete draft articles in admin panel
+-- The problem: RLS blocks anon users from seeing is_draft=true articles
+-- ============================================================================
+
+-- DROP all existing article policies first
+DROP POLICY IF EXISTS "Published articles are publicly readable" ON public.articles;
+DROP POLICY IF EXISTS "Admins can read all articles" ON public.articles;
+DROP POLICY IF EXISTS "Allow admin to insert articles" ON public.articles;
+DROP POLICY IF EXISTS "Allow admin to update articles" ON public.articles;
+DROP POLICY IF EXISTS "Allow admin to delete articles" ON public.articles;
+
+-- DROP all existing article_images policies
+DROP POLICY IF EXISTS "Allow public read access to article_images" ON public.article_images;
+DROP POLICY IF EXISTS "Allow authenticated users to manage images" ON public.article_images;
+DROP POLICY IF EXISTS "Allow admin to insert images" ON public.article_images;
+DROP POLICY IF EXISTS "Allow admin to delete images" ON public.article_images;
+
+-- ============================================================================
+-- ARTICLES: New policies
+-- ============================================================================
+
+-- 1. Anyone can read published articles (public website)
+CREATE POLICY "Public can read published articles"
+ON public.articles FOR SELECT
+USING (is_published = true);
+
+-- 2. Anon key can read ALL articles (needed for admin panel drafts)
+CREATE POLICY "Anon can read all articles"
+ON public.articles FOR SELECT
+USING (true);
+
+-- 3. Anon key can insert articles (needed for generate button)
+CREATE POLICY "Anon can insert articles"
+ON public.articles FOR INSERT
+WITH CHECK (true);
+
+-- 4. Anon key can update articles (needed for publish, notes)
+CREATE POLICY "Anon can update articles"
+ON public.articles FOR UPDATE
+USING (true)
+WITH CHECK (true);
+
+-- 5. Anon key can delete articles (needed for bulk delete)
+CREATE POLICY "Anon can delete articles"
+ON public.articles FOR DELETE
+USING (true);
+
+-- ============================================================================
+-- ARTICLE_IMAGES: New policies
+-- ============================================================================
+
+-- 1. Anyone can read images
+CREATE POLICY "Public can read article images"
+ON public.article_images FOR SELECT
+USING (true);
+
+-- 2. Anon can insert images
+CREATE POLICY "Anon can insert article images"
+ON public.article_images FOR INSERT
+WITH CHECK (true);
+
+-- 3. Anon can delete images
+CREATE POLICY "Anon can delete article images"
+ON public.article_images FOR DELETE
+USING (true);
+
+-- 4. Anon can update images
+CREATE POLICY "Anon can update article images"
+ON public.article_images FOR UPDATE
+USING (true)
+WITH CHECK (true);
+
+-- ============================================================================
+-- VERIFY: Check all policies are in place
+-- ============================================================================
+SELECT 
+  schemaname,
+  tablename,
+  policyname,
+  cmd
+FROM pg_policies
+WHERE tablename IN ('articles', 'article_images')
+ORDER BY tablename, cmd;

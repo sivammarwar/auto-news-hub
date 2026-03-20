@@ -8,6 +8,10 @@ import ArticlePage from "./pages/ArticlePage";
 import CategoryPage from "./pages/CategoryPage";
 import AdminLogin from "./pages/AdminLogin";
 import AdminPage from "./pages/AdminPage";
+import PrivacyPage from "./pages/PrivacyPage";
+import TermsPage from "./pages/TermsPage";
+import RSSPage from "./pages/RSSPage";
+import ContactPage from "./pages/ContactPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -17,14 +21,18 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
-          <Route path="/" element={<Index />} />
-          <Route path="/article/:id" element={<ArticlePage />} />
+          <Route path="/"              element={<Index />} />
+          <Route path="/article/:id"   element={<ArticlePage />} />
           <Route path="/category/:slug" element={<CategoryPage />} />
-          <Route path="/admin-login" element={<AdminLogin />} />
-          <Route path="/admin-panel" element={<AdminPage />} />
-          <Route path="*" element={<NotFound />} />
+          <Route path="/admin-login"   element={<AdminLogin />} />
+          <Route path="/admin-panel"   element={<AdminPage />} />
+          <Route path="/privacy"       element={<PrivacyPage />} />
+          <Route path="/terms"         element={<TermsPage />} />
+          <Route path="/rss"           element={<RSSPage />} />
+          <Route path="/contact"       element={<ContactPage />} />
+          <Route path="*"              element={<NotFound />} />
         </Routes>
       </BrowserRouter>
     </TooltipProvider>

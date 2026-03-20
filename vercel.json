@@ -3,37 +3,28 @@
   "outputDirectory": "dist",
   "devCommand": "npm run dev",
   "framework": "vite",
-  "functions": {
-    "api/**/*.js": {
-      "maxDuration": 120
-    }
-  },
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ],
   "crons": [
     {
-      "path": "/api/cron/fetch-news.js",
-      "schedule": "0 6 * * *"
+      "path": "/api/cron/generate-articles",
+      "schedule": "0 2 * * *"
     },
     {
-      "path": "/api/cron/fetch-viral.js",
-      "schedule": "0 3 * * *"
-    },
-    {
-      "path": "/api/cron/fetch-history.js",
-      "schedule": "30 14 * * 6"
-    },
-    {
-      "path": "/api/cron/analyze-trends.js",
+      "path": "/api/cron/fetch-viral",
       "schedule": "0 8 * * *"
     },
     {
-      "path": "/api/cron/cleanup-database.js",
-      "schedule": "0 2 * * *"
+      "path": "/api/cron/fetch-history",
+      "schedule": "30 14 * * 6"
+    },
+    {
+      "path": "/api/cron/cleanup-database",
+      "schedule": "0 0 * * *"
     }
   ]
 }

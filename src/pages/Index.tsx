@@ -8,7 +8,7 @@ import { useArticles } from '@/hooks/useArticles';
 const Index = () => {
   const { data: articles, isLoading } = useArticles();
 
-  const heroArticle = articles?.[0];
+  const heroArticle  = articles?.[0];
   const gridArticles = articles?.slice(1) ?? [];
 
   return (
@@ -18,19 +18,25 @@ const Index = () => {
       <main className="flex-1">
         {isLoading ? (
           <div className="py-32 text-center">
-            <span className="text-meta animate-pulse">Loading articles...</span>
+            <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground animate-pulse">
+              Loading articles...
+            </span>
           </div>
         ) : !heroArticle ? (
           <EmptyState />
         ) : (
           <>
+            {/* Hero — top story */}
             <HeroSection article={heroArticle} />
 
-            <section className="max-w-screen-xl mx-auto px-6 py-16">
-              <div className="mb-8">
-                <span className="text-meta text-foreground font-bold">Latest</span>
+            {/* Article grid */}
+            <section className="max-w-screen-xl mx-auto px-4 sm:px-6 py-10 sm:py-16">
+              <div className="mb-6 sm:mb-8">
+                <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                  Latest
+                </span>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-0">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-0">
                 {gridArticles.map((article, i) => (
                   <ArticleCard key={article.id} article={article} index={i} />
                 ))}

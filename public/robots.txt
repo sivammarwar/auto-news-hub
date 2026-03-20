@@ -1,20 +1,12 @@
+# ── Allow all good crawlers ───────────────────────────────────────────────────
 User-agent: *
 Allow: /
-Disallow: /admin
 
-# Sitemap location - tells Google where to find your sitemap
-Sitemap: https://auto-news-hub.vercel.app/api/sitemap.xml
+# Block admin pages from being indexed
+Disallow: /admin-panel
+Disallow: /admin-login
 
-# Google-specific crawling instructions
-User-agent: Googlebot
-Allow: /
-Priority: 1
-
-# Bing
-User-agent: Bingbot
-Allow: /
-
-# Block bad bots
+# ── Block bad bots that scrape without value ──────────────────────────────────
 User-agent: MJ12bot
 Disallow: /
 
@@ -24,7 +16,24 @@ Disallow: /
 User-agent: SemrushBot
 Disallow: /
 
-# Crawl delay (milliseconds between requests)
-# Not required but helpful for server resources
-# 0 means no delay
-Crawl-delay: 0
+User-agent: DotBot
+Disallow: /
+
+User-agent: BLEXBot
+Disallow: /
+
+User-agent: DataForSeoBot
+Disallow: /
+
+# ── Google ────────────────────────────────────────────────────────────────────
+User-agent: Googlebot
+Allow: /
+Disallow: /admin-panel
+Disallow: /admin-login
+
+# ── Bing ──────────────────────────────────────────────────────────────────────
+User-agent: Bingbot
+Allow: /
+
+# ── Sitemap — update yourdomain.com to your actual Vercel domain ──────────────
+Sitemap: https://auto-news-hub.vercel.app/api/sitemap.xml

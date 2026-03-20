@@ -1,21 +1,85 @@
 // api/cron/fetch-viral.js
-// Uses GROQ API (FREE) instead of OpenAI
-// Finds top 10 viral articles and scores them
+// ════════════════════════════════════════════════════════════════════════════
+// VIRAL STORIES PIPELINE
+// Schedule: "0 8 * * *"  → runs daily at 8 AM UTC
+//
+// What it does (zero human touch):
+//   1. Fetches top stories from 6 viral RSS sources
+//   2. Scores all headlines for virality in ONE Groq batch call
+//   3. Takes top 10 by score
+//   4. Rewrites each in Arjun Mehta's voice with spicy headline
+//   5. Generates subject-specific image queries per article
+//   6. Fetches 4 images per article from Pexels
+//   7. Auto-publishes articles with score ≥ 7.0 and ≥ 1 image
+// ════════════════════════════════════════════════════════════════════════════
 
 import axios from 'axios';
-import xml2js from 'xml2js';
-import Groq from 'groq-sdk';
-import { createClient } from '@supabase/supabase-js';
+import Groq   from 'groq-sdk';
+import { createClient }        from '@supabase/supabase-js';
+import { hybridFetchAndSaveImages } from '../lib/image-pipeline.js';
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// ─── Groq key rotator ─────────────────────────────────────────────────────────
+const GROQ_KEYS = [
+  process.env.GROQ_API_KEY,
+  process.env.GROQ_API_KEY_2,
+  process.env.GROQ_API_KEY_3,
+].filter(Boolean);
 
-// ✅ FIXED: SUPABASE_URL instead of VITE_SUPABASE_URL
-const supabaseAdmin = createClient(
+if (GROQ_KEYS.length === 0) throw new Error('No GROQ_API_KEY set in environment variables');
+
+let currentKeyIndex   = 0;
+let keyExhaustedUntil = {};
+
+function getActiveGroq() {
+  const now = Date.now();
+  for (let i = 0; i < GROQ_KEYS.length; i++) {
+    const idx = (currentKeyIndex + i) % GROQ_KEYS.length;
+    if (!keyExhaustedUntil[idx] || keyExhaustedUntil[idx] < now) {
+      currentKeyIndex = idx;
+      return new Groq({ apiKey: GROQ_KEYS[idx] });
+    }
+  }
+  const soonest = Object.entries(keyExhaustedUntil).sort((a, b) => a[1] - b[1])[0];
+  currentKeyIndex = parseInt(soonest[0]);
+  return new Groq({ apiKey: GROQ_KEYS[currentKeyIndex] });
+}
+
+function markKeyExhausted(keyIdx, waitMs) {
+  keyExhaustedUntil[keyIdx] = Date.now() + waitMs;
+  console.log(`   🔑 Key #${keyIdx + 1} exhausted — rotating`);
+  for (let i = 1; i < GROQ_KEYS.length; i++) {
+    const next = (keyIdx + i) % GROQ_KEYS.length;
+    if (!keyExhaustedUntil[next] || keyExhaustedUntil[next] < Date.now()) {
+      currentKeyIndex = next;
+      console.log(`   ✅ Switched to Groq key #${next + 1}`);
+      return;
+    }
+  }
+}
+const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const xmlParser = new xml2js.Parser();
+const TOP_N_ARTICLES        = 10;
+const AUTO_PUBLISH_SCORE    = 7.0;
+const MIN_IMAGES_TO_PUBLISH = 1;
+const TARGET_IMAGES         = 4;
+const IMAGE_MIN_WIDTH       = 800;
+const INTER_ARTICLE_DELAY   = 8000;
+
+const AUTHOR_NAME    = 'Arjun Mehta';
+const AUTHOR_TAGLINE = 'Senior Correspondent, The Daily Pulse';
+const AUTHOR_BIO =
+  `Arjun Mehta is a 34-year-old investigative journalist from Mumbai with 11 years of experience ` +
+  `covering politics, cricket, Bollywood, and technology for major Indian publications. ` +
+  `He is known for his sharp, no-nonsense writing style — blunt, conversational, occasionally ` +
+  `sarcastic, always factual. He does not write press releases. He writes like he is explaining ` +
+  `a story to a smart friend over chai. He uses short punchy sentences mixed with longer analytical ones. ` +
+  `He always asks "why does this matter to the average Indian?" and answers it in every article. ` +
+  `He never uses corporate jargon. He never says "it is worth noting" or "it is important to mention". ` +
+  `He calls things as they are. His opinions are informed and direct but always backed by facts. ` +
+  `He ends every article with a sharp one-liner that sticks in the reader's mind.`;
 
 const VIRAL_SOURCES = [
   'https://feeds.feedburner.com/ndtvnews-top-stories',
@@ -24,8 +88,13 @@ const VIRAL_SOURCES = [
   'https://feeds.bbci.co.uk/news/world/rss.xml',
   'https://rss.cnn.com/rss/edition.rss',
   'https://news.ycombinator.com/rss',
-  'https://www.reddit.com/r/worldnews/top/.rss?limit=25',
-  'https://www.reddit.com/r/india/top/.rss?limit=25',
+];
+
+const VIRAL_IMAGE_FALLBACKS = [
+  'india street crowd people',
+  'urban india city life',
+  'social media phone screen',
+  'india public space market',
 ];
 
 export default async function handler(req, res) {
@@ -33,180 +102,223 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
+  const startTime = Date.now();
+  const timestamp = new Date().toISOString();
+  console.log(`\n${'='.repeat(60)}\nVIRAL PIPELINE STARTED — ${timestamp}\n${'='.repeat(60)}\n`);
+
+  let totalSaved = 0, totalPublished = 0;
+  const results  = [];
+
   try {
-    console.log('\n=== FETCH-VIRAL CRON STARTED ===\n');
-    const timestamp = new Date().toISOString();
-
-    console.log('📡 Fetching from viral sources...');
-    const allArticles = [];
-
-    for (const rssUrl of VIRAL_SOURCES) {
+    // ── Step 1: Fetch all headlines ───────────────────────────────────────────
+    console.log('Fetching RSS sources...');
+    const allHeadlines = [];
+    for (const url of VIRAL_SOURCES) {
       try {
-        const response = await axios.get(rssUrl, {
-          timeout: 10000,
+        const res = await axios.get(url, {
+          timeout: 9000,
           headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NewsBot/1.0)' },
         });
-        const parsed = await xmlParser.parseStringPromise(response.data);
-        const items = parsed.rss?.channel?.[0]?.item || parsed.feed?.entry || [];
-
-        items.forEach(item => {
-          const sourceUrl = item.link?.[0]?.$?.href || item.link?.[0] || item.guid?.[0];
-          const title = item.title?.[0]?._ || item.title?.[0] || 'No title';
-
-          if (sourceUrl && title && title !== 'No title') {
-            allArticles.push({
-              title: typeof title === 'string' ? title : String(title),
-              sourceUrl: typeof sourceUrl === 'string' ? sourceUrl : sourceUrl._,
-              sourceName: extractDomainFromUrl(typeof sourceUrl === 'string' ? sourceUrl : sourceUrl._),
-              rawContent: item.description?.[0] || item.summary?.[0] || '',
-              imageUrl: extractImageFromContent(item.description?.[0]),
-              publishedDate: new Date(item.pubDate?.[0] || item.updated?.[0] || Date.now()),
-              category: 'viral',
-            });
-          }
+        const matches = res.data.match(/<title[^>]*>([^<]{5,200})<\/title>/gi) ?? [];
+        let count = 0;
+        matches.forEach(m => {
+          const t = m.replace(/<[^>]*>/g, '').trim();
+          if (t && !t.includes('<!') && t.length > 10) { allHeadlines.push({ title: t, source: extractDomain(url) }); count++; }
         });
-
-        console.log(`   ✓ ${items.length} items from ${extractDomainFromUrl(rssUrl)}`);
-      } catch (err) {
-        console.error(`   ✗ Failed ${rssUrl}: ${err.message}`);
-      }
+        console.log(`  ✓ ${extractDomain(url)}: ${count}`);
+      } catch (e) { console.log(`  ✗ ${extractDomain(url)}: ${e.message}`); }
+      await sleep(300);
     }
 
-    console.log(`\n📰 Total raw articles: ${allArticles.length}`);
+    // Deduplicate headlines
+    const seenTitles = new Set();
+    const unique = allHeadlines.filter(h => { if (seenTitles.has(h.title)) return false; seenTitles.add(h.title); return true; });
+    console.log(`\nUnique headlines: ${unique.length}`);
+    if (unique.length === 0) return res.status(200).json({ success: true, message: 'No headlines found', timestamp });
 
-    // Deduplicate
-    const urls = allArticles.map(a => a.sourceUrl);
-    const { data: existing } = await supabaseAdmin
-      .from('articles')
-      .select('source_url')
-      .in('source_url', urls);
+    // ── Step 2: Skip already-saved titles (last 48h) ──────────────────────────
+    const { data: recent } = await supabase
+      .from('articles').select('title').eq('category', 'viral')
+      .gte('published_date', new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString());
+    const recentSet = new Set((recent ?? []).map(a => a.title.toLowerCase().substring(0, 50)));
+    const fresh = unique.filter(h => !recentSet.has(h.title.toLowerCase().substring(0, 50)));
+    console.log(`New after dedup: ${fresh.length}`);
+    if (fresh.length === 0) return res.status(200).json({ success: true, message: 'No new stories', timestamp });
 
-    const existingUrls = new Set((existing || []).map(a => a.source_url));
-    const newArticles = allArticles.filter(a => !existingUrls.has(a.sourceUrl));
-    console.log(`✅ New articles after dedup: ${newArticles.length}`);
+    // ── Step 3: Score top 30 in one batch call ────────────────────────────────
+    console.log('\nScoring headlines...');
+    const toScore = fresh.slice(0, 30);
+    const scoringRaw = await groqCall([
+      {
+        role: 'system',
+        content:
+          `Score each headline 0-10 for virality with Indian audiences. ` +
+          `Consider: emotional impact, shareability, controversy, surprise, relevance to Indians. ` +
+          `Return ONLY a JSON array of numbers in the same order. Example: [7.5, 8.0, 6.0]`,
+      },
+      {
+        role: 'user',
+        content: `Score these ${toScore.length} headlines:\n` + toScore.map((h, i) => `${i + 1}. ${h.title}`).join('\n') + `\n\nReturn ONLY the JSON array.`,
+      },
+    ], 200);
 
-    if (newArticles.length === 0) {
-      return res.status(200).json({ success: true, message: 'No new viral articles found', timestamp });
-    }
-
-    // Score articles
-    console.log('\n🤖 Scoring articles for virality with Groq...');
-    const scored = [];
-
-    for (const article of newArticles.slice(0, 50)) {
-      try {
-        const score = await scoreForVirality(article.title, article.rawContent);
-        scored.push({ ...article, viralScore: score });
-        await sleep(200);
-      } catch {
-        scored.push({ ...article, viralScore: 5.0 });
-      }
-    }
-
-    // Pick top 10
-    const top10 = scored.sort((a, b) => b.viralScore - a.viralScore).slice(0, 10);
-    console.log(`\n🏆 Top 10 viral articles selected`);
-
-    // Generate summaries
-    console.log('\n📝 Generating summaries with Groq...');
-    const enriched = [];
-
-    for (const article of top10) {
-      try {
-        const summary = await summarizeAsViral(article.title, article.rawContent);
-        enriched.push({
-          title: article.title,
-          source_url: article.sourceUrl,
-          source_name: article.sourceName,
-          summary,
-          raw_content: article.rawContent || null,
-          category: 'viral',
-          score: article.viralScore,
-          image_url: article.imageUrl || null,
-          published_date: article.publishedDate.toISOString(),
-          is_published: false,
-          is_draft: true
-        });
-        await sleep(200);
-      } catch (err) {
-        console.error(`   ✗ Summary error: ${err.message}`);
-      }
-    }
-
-    // Insert into Supabase
-    if (enriched.length > 0) {
-      const { data, error } = await supabaseAdmin
-        .from('articles')
-        .insert(enriched)
-        .select('id');
-
-      if (error) throw error;
-      console.log(`\n✅ Inserted ${data?.length} viral articles as drafts`);
-    }
-
-    console.log('\n=== FETCH-VIRAL CRON COMPLETED ===\n');
-
-    return res.status(200).json({
-      success: true,
-      viralArticlesCreated: enriched.length,
-      timestamp,
-      message: `Created ${enriched.length} viral articles.`
+    const scores = extractJSON(scoringRaw);
+    const scored = toScore.map((h, i) => {
+      const s = Array.isArray(scores) ? parseFloat(scores[i]) : 5.0;
+      return { ...h, score: isNaN(s) ? 5.0 : clamp(s, 0, 10) };
     });
 
-  } catch (error) {
-    console.error('\n❌ FETCH-VIRAL CRON ERROR:', error.message);
-    return res.status(500).json({ error: error.message });
+    const topStories = scored.sort((a, b) => b.score - a.score).slice(0, TOP_N_ARTICLES);
+    console.log(`Top ${topStories.length} stories selected`);
+
+    // ── Step 4: Write + image + publish each story ────────────────────────────
+    for (const story of topStories) {
+      console.log(`\n${'─'.repeat(50)}\n✍️  Writing: "${story.title.substring(0, 70)}"`);
+      await sleep(INTER_ARTICLE_DELAY);
+
+      const raw = await groqCall([
+        {
+          role: 'system',
+          content:
+            `You are ${AUTHOR_NAME}, ${AUTHOR_TAGLINE}.\n\nYOUR STYLE:\n${AUTHOR_BIO}\n\n` +
+            `LEGAL: 100% ORIGINAL journalism. Not a rewrite. Your own voice only.\n\n` +
+            `TITLE RULES:\n` +
+            `- 12-20 words. Creates curiosity gap or emotional reaction.\n` +
+            `- BANNED: plain copy of original headline\n` +
+            `- Use one of:\n` +
+            `  • "[X] Just Happened And Nobody Is Talking About What It Actually Means"\n` +
+            `  • "The Real Reason [X] Is Happening And Why Every Indian Should Pay Attention"\n` +
+            `  • "Stop Pretending [X] Is Normal — Here Is What Is Actually Going On"\n` +
+            `  • "Why [X] Is The Biggest Story Nobody In India Is Taking Seriously Enough"\n\n` +
+            `IMAGE QUERIES: exactly 4 Pexels search strings specific to this story.\n` +
+            `- Famous person → their role/action not their name\n` +
+            `- Famous place → search it directly\n` +
+            `- Event → genre/atmosphere/location\n` +
+            `- 3-5 words each\n\n` +
+            `Return ONLY raw JSON:\n` +
+            `{ "title": "SPICY 12-20 WORD TITLE", "summary": "2-3 punchy teaser sentences", ` +
+            `"content": "400-500 word article paragraphs separated by \\n\\n ending with sharp one-liner", ` +
+            `"score": 0-10, "image_queries": ["q1","q2","q3","q4"] }`,
+        },
+        {
+          role: 'user',
+          content: `Write your original viral piece based on: "${story.title}"\nSource: ${story.source}\nRaw JSON only.`,
+        },
+      ], 900);
+
+      const parsed = extractJSON(raw);
+      if (!parsed?.title || !parsed?.summary || !parsed?.content) { console.log(`   ✗ Bad response — skipping`); continue; }
+
+      const finalScore = clamp(parseFloat(String(parsed.score)) || story.score, 0, 10);
+
+      const { data: saved, error: saveErr } = await supabase.from('articles').insert({
+        title:          parsed.title.substring(0, 255),
+        source_url:     `https://ai-generated/viral/${Date.now()}`,
+        source_name:    AUTHOR_NAME,
+        summary:        parsed.summary.substring(0, 500),
+        raw_content:    parsed.content,
+        category:       'viral',
+        score:          finalScore,
+        published_date: new Date().toISOString(),
+        is_draft:       true,
+        is_published:   false,
+        image_url:      null,
+        admin_notes:    `Viral. Original: "${story.title.substring(0, 100)}"`,
+      }).select('id').single();
+
+      if (saveErr) { console.log(`   ✗ DB error: ${saveErr.message}`); continue; }
+
+      totalSaved++;
+      const articleId = saved.id;
+      console.log(`   ✅ #${articleId} saved | score ${finalScore.toFixed(1)}`);
+
+      const imageQueries = Array.isArray(parsed.image_queries) && parsed.image_queries.length > 0
+        ? parsed.image_queries : VIRAL_IMAGE_FALLBACKS;
+      const imageCount = await fetchAndSaveImages(articleId, parsed.title, imageQueries);
+      console.log(`   🖼  Images: ${imageCount}`);
+
+      if (finalScore >= AUTO_PUBLISH_SCORE && imageCount >= MIN_IMAGES_TO_PUBLISH) {
+        const { error: pubErr } = await supabase.from('articles')
+          .update({ is_published: true, is_draft: false, updated_at: new Date().toISOString() })
+          .eq('id', articleId);
+        if (!pubErr) {
+          totalPublished++;
+          console.log(`   🚀 AUTO-PUBLISHED #${articleId}`);
+          results.push({ id: articleId, title: parsed.title, score: finalScore, status: 'published', images: imageCount });
+        }
+      } else {
+        console.log(`   📋 Draft`);
+        results.push({ id: articleId, title: parsed.title, score: finalScore, status: 'draft', images: imageCount });
+      }
+    }
+
+    const durationSec = Math.round((Date.now() - startTime) / 1000);
+    console.log(`\n${'='.repeat(60)}\nVIRAL DONE — ${durationSec}s | Saved: ${totalSaved} | Published: ${totalPublished}\n${'='.repeat(60)}\n`);
+    return res.status(200).json({ success: true, timestamp, durationSeconds: durationSec, totalSaved, totalPublished, articles: results });
+
+  } catch (e) {
+    console.error(`\n❌ VIRAL ERROR: ${e.message}`);
+    return res.status(500).json({ error: e.message, timestamp });
   }
 }
 
-async function scoreForVirality(title, content) {
-  try {
-    const response = await groq.chat.completions.create({
-      model: 'mixtral-8x7b-32768',
-      messages: [
-        { role: 'system', content: 'Score this article 0-10 for virality. RETURN ONLY a single number.' },
-        { role: 'user', content: `Title: ${title}\n\nContent: ${(content || '').substring(0, 500)}` },
-      ],
-      max_tokens: 5,
-      temperature: 0.2,
-    });
-    const score = parseFloat(response.choices[0].message.content.trim());
-    return isNaN(score) ? 5.0 : Math.min(10, Math.max(0, score));
-  } catch { return 5.0; }
+// ─── Hybrid image fetch + save (Wikimedia for persons/places, Pexels for rest) ──
+async function fetchAndSaveImages(articleId, title, imageQueries) {
+  return hybridFetchAndSaveImages({
+    supabase,
+    articleId,
+    title,
+    category:          'viral',
+    imageQueries,
+    targetImages:      TARGET_IMAGES,
+    categoryFallbacks: VIRAL_IMAGE_FALLBACKS,
+  });
 }
 
-async function summarizeAsViral(title, content) {
-  if (!content || content.length < 30) return title;
 
-  try {
-    const response = await groq.chat.completions.create({
-      model: 'mixtral-8x7b-32768',
-      messages: [
-        { role: 'system', content: 'Summarize this viral article in 80-100 words. Start with the most shocking fact. Be punchy and factual.' },
-        { role: 'user', content: `Title: ${title}\n\nContent: ${content.substring(0, 2000)}` },
-      ],
-      max_tokens: 150,
-      temperature: 0.6,
-    });
-    return response.choices[0].message.content.trim();
-  } catch { return content.substring(0, 300) + '...'; }
+function extractJSON(raw) {
+  if (!raw) return null;
+  const c = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+  try { return JSON.parse(c); } catch { /* fall through */ }
+  const a = c.match(/\[[\s\S]*\]/); if (a) try { return JSON.parse(a[0]); } catch { /* fall through */ }
+  const o = c.match(/\{[\s\S]*\}/); if (o) try { return JSON.parse(o[0]); } catch { /* fall through */ }
+  return null;
 }
 
-function extractImageFromContent(content) {
-  if (!content) return null;
-  try {
-    const match = content.match(/<img[^>]+src="([^">]+)"/);
-    return match ? match[1] : null;
-  } catch { return null; }
-}
-
-function extractDomainFromUrl(url) {
-  try {
-    const domain = new URL(url).hostname.replace('www.', '');
-    return domain.charAt(0).toUpperCase() + domain.slice(1);
-  } catch { return 'News'; }
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function extractDomain(url) { try { return new URL(url).hostname.replace('www.', ''); } catch { return 'feed'; } }
+function clamp(n, lo, hi)    { return Math.min(hi, Math.max(lo, n)); }
+function sleep(ms)            { return new Promise(r => setTimeout(r, ms)); }async function groqCall(messages, maxTokens, retries = 5) {
+  const maxTotal = retries * GROQ_KEYS.length;
+  let totalAttempts = 0;
+  while (totalAttempts < maxTotal) {
+    totalAttempts++;
+    const keyIdx     = currentKeyIndex;
+    const groqClient = getActiveGroq();
+    try {
+      const r = await groqClient.chat.completions.create({
+        model: 'llama-3.3-70b-versatile', messages, max_tokens: maxTokens, temperature: 0.75,
+      });
+      return r.choices[0]?.message?.content?.trim() ?? null;
+    } catch (e) {
+      const msg    = e?.message ?? '';
+      const status = e?.status ?? 0;
+      if (status === 429 || msg.includes('rate_limit') || msg.includes('Rate limit')) {
+        if (msg.includes('tokens per day') || msg.includes('TPD')) {
+          console.log(`   🔴 Key #${keyIdx + 1} daily limit hit — rotating`);
+          markKeyExhausted(keyIdx, 24 * 60 * 60 * 1000);
+          if (GROQ_KEYS.length === 1) await sleep(60_000);
+          continue;
+        }
+        const waitMs = 62_000 + (totalAttempts * 2_000);
+        console.log(`   ⏳ Key #${keyIdx + 1} RPM limit — waiting ${Math.round(waitMs / 1000)}s`);
+        await sleep(waitMs);
+        continue;
+      }
+      if (status === 503 || status === 500) { await sleep(totalAttempts * 6_000); continue; }
+      console.log(`   ⚠ Groq error (key #${keyIdx + 1}): ${msg}`);
+      await sleep(totalAttempts * 3_000);
+    }
+  }
+  console.log(`   ✗ Groq: all keys and retries exhausted`);
+  return null;
 }

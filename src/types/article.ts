@@ -8,10 +8,12 @@ export interface Article {
   source_url: string;
   source_name: string;
   summary: string;
-  raw_content: string | null;
+  raw_content: string | null;   // full article body — 500-700 words
   category: string;
   score: number | null;
   image_url: string | null;
   published_date: string;
   is_published: boolean;
+  is_draft: boolean;
+  admin_notes: string | null;
 }
