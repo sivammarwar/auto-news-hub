@@ -192,33 +192,33 @@ export default async function handler(req, res) {
           content:
             `You are ${AUTHOR_NAME}, ${AUTHOR_TAGLINE}.\n\nYOUR STYLE:\n${AUTHOR_BIO}\n\n` +
 
-            `ARTICLE STRUCTURE — follow this exactly, written as flowing paragraphs (NO headers, NO bullet points):\n\n` +
-            `1. THE HOOK (2-3 sentences): Open with the single most shocking or surprising fact about this subject. ` +
-               `Something that makes the reader stop scrolling. A number, a date, a paradox, something that feels unbelievable but is true.\n\n` +
-            `2. THE SETUP (100-150 words): Who, what, when, where. Give the reader just enough context ` +
-               `to understand why this matters. Specific dates, specific places, specific names. No vague generalities.\n\n` +
-            `3. THE RISE / THE STORY (300-400 words): The most impressive, detailed, surprising part of the story. ` +
-               `This is where you pack in the facts nobody else covers. Specific numbers — army sizes, trade volumes, ` +
-               `dates of battles, names of adversaries. Real quotes if any exist. The kind of detail that makes ` +
-               `the reader think "how did I not know this?"\n\n` +
-            `4. THE FORGOTTEN PART (200-250 words): The twist. The thing that was deliberately buried, ` +
-               `misattributed, or forgotten. Why don't we know about this today? Who benefited from erasing this story? ` +
-               `Be direct. Be opinionated. This is Arjun Mehta speaking — he calls things as they are.\n\n` +
-            `5. THE MYSTERY OR THE FALL (150-200 words): How did it end? What remains unexplained? ` +
-               `What do archaeologists, historians, or researchers still argue about? If there is an unsolved mystery, dig into it.\n\n` +
-            `6. WHY IT MATTERS TODAY (100-150 words): Connect this to modern India or the modern world. ` +
-               `What does this story tell us about today? Be sharp and direct — no vague "lessons from history" platitudes.\n\n` +
-            `7. THE CLOSER (1 sentence): End with a single sharp one-liner that sticks in the reader's mind. ` +
-               `The kind of line someone screenshots and shares.\n\n` +
-
+            `ARTICLE STRUCTURE — use section headings and bold highlights:\n\n` +
+            `FORMATTING RULES (critical — follow exactly):\n` +
+            `- Use ## for section headings (e.g. ## The Empire Nobody Remembers)\n` +
+            `- Use **bold** to highlight key facts, dates, numbers, shocking details\n` +
+            `- Paragraphs separated by \\n\\n\n` +
+            `- NO bullet points. NO numbered lists. Flowing paragraphs only.\n` +
+            `- Every section heading: short (3-6 words), punchy, curiosity-driven\n\n` +
+            `SECTIONS — write in this exact order:\n\n` +
+            `## [Hook heading — most shocking angle] (2-3 sentences)\n` +
+            `Open with the single most surprising fact. Bold the most shocking number or detail.\n\n` +
+            `## The World They Lived In (100-150 words)\n` +
+            `Context: who, what, when, where. Use **specific dates**, **specific places**, **real names**.\n\n` +
+            `## [Subject's Greatest Achievement — name it] (300-400 words)\n` +
+            `Most impressive, detailed, surprising part. Bold every key figure, date, number.\n\n` +
+            `## The Part History Forgot (200-250 words)\n` +
+            `The twist. What was deliberately buried. Why don't we know this? Be opinionated.\n\n` +
+            `## [The Fall or The Mystery — name specifically] (150-200 words)\n` +
+            `How did it end? What remains unexplained? Bold the unresolved question.\n\n` +
+            `## Why India Should Care Today (100-150 words)\n` +
+            `Connect to modern India. Be sharp. No "lessons from history" platitudes.\n\n` +
+            `## The Line That Says It All (1 sentence)\n` +
+            `Sharp one-liner. The kind someone screenshots and shares.\n\n` +
             `QUALITY RULES:\n` +
             `- Total length: 1200-1500 words\n` +
-            `- Every paragraph must contain at least one specific fact (date, number, name, place)\n` +
-            `- NO phrases like "it is worth noting", "it is important to mention", "in conclusion"\n` +
-            `- NO Wikipedia-style neutral tone — this is journalism with a point of view\n` +
-            `- Use short punchy sentences mixed with longer analytical ones\n` +
-            `- 100% factually accurate — if unsure of a specific detail, use approximate language ("roughly", "around", "estimates suggest")\n\n` +
-
+            `- Every paragraph: at least one **bolded** specific fact\n` +
+            `- Section headings must NOT be generic (not "Introduction" or "Conclusion")\n` +
+            `- NO "it is worth noting", "in conclusion", Wikipedia-neutral tone\n\n` +
             `IMAGE QUERY RULES:\n` +
             `Return "image_queries": exactly 8 Pexels search strings for this specific subject.\n` +
             `Think visually — what would make great editorial photos for this article?\n` +
@@ -240,15 +240,30 @@ export default async function handler(req, res) {
           role: 'user',
           content:
             `Write your deep-dive history article about: "${subject}"\n\n` +
-            `Remember: 1200-1500 words, no headers, flowing paragraphs, packed with specific facts nobody else covers. Raw JSON only.`,
+            `Remember: 1200-1500 words, use ## section headings and **bold** key facts, packed with specific dates and numbers nobody else covers. Raw JSON only.`,
         },
       ],
-      2200  // higher token limit for longer article
+      6000  // 1500 words with headings + JSON wrapper needs ~4000 tokens minimum
     );
 
-    const parsed = extractJSON(articleRaw);
-    if (!parsed?.title || !parsed?.summary || !parsed?.content) {
-      console.log(`✗ Bad article response`);
+    let parsed = extractJSON(articleRaw);
+
+    // Recovery: if JSON was truncated, salvage what we can
+    if (!parsed && articleRaw) {
+      const titleMatch   = articleRaw.match(/"title"\s*:\s*"([^"]{10,255})"/);
+      const contentMatch = articleRaw.match(/"content"\s*:\s*"([\s\S]{300,})/);
+      if (titleMatch && contentMatch) {
+        let content = contentMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+        const lastPeriod = Math.max(content.lastIndexOf('.'), content.lastIndexOf('।'));
+        if (lastPeriod > 300) content = content.substring(0, lastPeriod + 1);
+        parsed = { title: titleMatch[1], summary: content.substring(0, 300).replace(/\n/g, ' '),
+                   content, score: 8.0, image_queries: [] };
+        console.log(`   ✅ Recovered partial article (${content.split(/\s+/).length} words)`);
+      }
+    }
+
+    if (!parsed?.title || !parsed?.content || parsed.content.length < 300) {
+      console.log(`✗ Article generation failed — raw length: ${articleRaw?.length ?? 0} chars`);
       return res.status(500).json({ error: 'Failed to generate article', timestamp });
     }
 

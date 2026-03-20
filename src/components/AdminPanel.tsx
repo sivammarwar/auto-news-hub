@@ -248,29 +248,82 @@ async function groqRequest(
 function extractJSON<T>(raw: string | null): T | null {
   if (!raw) return null;
 
-  // Strip markdown code fences (```json ... ``` or ``` ... ```)
-  let cleaned = raw
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```\s*$/, '')
-    .trim();
+  // Step 1: Aggressively strip ALL markdown fences and surrounding text
+  let cleaned = raw.trim();
+  // Remove ``` fences with optional language tag and optional space
+  cleaned = cleaned.replace(/^`{1,3}(?:json)?\s*/i, '').replace(/\s*`{1,3}\s*$/g, '').trim();
 
-  // Try direct parse first
-  try { return JSON.parse(cleaned) as T; } catch { /* fall through */ }
-
-  // Try to extract the first JSON array [...] — needed for topics list
-  const arrMatch = cleaned.match(/\[[\s\S]*\]/);
-  if (arrMatch) {
-    try { return JSON.parse(arrMatch[0]) as T; } catch { /* fall through */ }
+  // Step 2: fixControlChars — convert literal \n \r \t inside JSON strings to escape seqs
+  function fixControlChars(s: string): string {
+    const out: string[] = [];
+    let inStr = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      const prev = i > 0 ? s[i - 1] : '';
+      if (ch === '"' && prev !== '\\') inStr = !inStr;
+      if (inStr && ch === '\n') { out.push('\\n'); continue; }
+      if (inStr && ch === '\r') { out.push('\\r'); continue; }
+      if (inStr && ch === '\t') { out.push('\\t'); continue; }
+      out.push(ch);
+    }
+    return out.join('');
   }
 
-  // Try to extract the first JSON object {...} — needed for article content
-  const objMatch = cleaned.match(/\{[\s\S]*\}/);
-  if (objMatch) {
-    try { return JSON.parse(objMatch[0]) as T; } catch { /* fall through */ }
+  // Step 3: Try parse attempts in order
+  const attempts = [
+    cleaned,
+    fixControlChars(cleaned),
+  ];
+
+  // Also try extracting just the {...} or [...] portion
+  const objM = cleaned.match(/\{[\s\S]*\}/);
+  const arrM = cleaned.match(/\[[\s\S]*\]/);
+  if (objM) attempts.push(objM[0], fixControlChars(objM[0]));
+  if (arrM) attempts.push(arrM[0], fixControlChars(arrM[0]));
+
+  for (const attempt of attempts) {
+    try { return JSON.parse(attempt) as T; } catch { /* try next */ }
+  }
+
+  // Step 4: Field-by-field extraction for severely malformed JSON
+  // Use the cleaned string with control chars fixed
+  const fixed = fixControlChars(cleaned);
+
+  const titleM   = fixed.match(/"title"\s*:\s*"([^"]{5,255})"/);
+  const summaryM = fixed.match(/"summary"\s*:\s*"([^"]{10,500})"/);
+  const scoreM   = fixed.match(/"score"\s*:\s*([\d.]+)/);
+  const imgM     = fixed.match(/"image_queries"\s*:\s*(\[[^\]]*\])/);
+
+  // Extract content — everything between "content": " and the next top-level field
+  const contentM = fixed.match(/"content"\s*:\s*"([\s\S]{50,}?)"\s*,\s*"(?:score|image_queries)"/)
+    || fixed.match(/"content"\s*:\s*"([\s\S]{50,}?)"\s*\}/)
+    || fixed.match(/"content"\s*:\s*"([\s\S]{50,})/);
+
+  if (titleM && contentM) {
+    const rawContent = contentM[1]
+      .replace(/\\n/g, '\n')
+      .replace(/\\"/g, '"')
+      .replace(/\\t/g, '\t')
+      .trim();
+    // Trim to last complete sentence
+    const lastStop = Math.max(rawContent.lastIndexOf('.'), rawContent.lastIndexOf('।'), rawContent.lastIndexOf('!'), rawContent.lastIndexOf('?'));
+    const content = lastStop > 100 ? rawContent.substring(0, lastStop + 1) : rawContent;
+
+    let imgs: string[] = [];
+    if (imgM) { try { imgs = JSON.parse(imgM[1]); } catch { /* ignore */ } }
+
+    return {
+      title:         titleM[1],
+      summary:       summaryM?.[1] ?? content.substring(0, 200).replace(/\n/g, ' '),
+      content,
+      score:         parseFloat(scoreM?.[1] ?? '7.5') || 7.5,
+      image_queries: imgs,
+    } as T;
   }
 
   return null;
 }
+
 
 // ════════════════════════════════════════════════════════════════════════════
 // IMAGE PIPELINE
@@ -1060,8 +1113,7 @@ export default function AdminPanel() {
             .filter(a => a.category === cat)
             .slice(0, 30)  // last 30 per category
             .map(a => `- ${a.title}`)
-            .join('
-');
+            .join('\n');
           recentTitlesByCategory[cat] = catTitles;
         }
         const totalCovered = recentArticles.length;
@@ -1433,6 +1485,7 @@ Return a JSON array of ${ARTICLES_PER_CATEGORY} FRESH trending topics NOT covere
     ].filter(Boolean) as string[];
 
     const pexelsKey = import.meta.env.VITE_PEXELS_API_KEY as string | undefined;
+    const omdbKey   = import.meta.env.VITE_OMDB_API_KEY   as string | undefined;
 
     if (groqKeys.length === 0) { setError('Missing VITE_GROQ_API_KEY'); return; }
     if (!pexelsKey)            { setError('Missing VITE_PEXELS_API_KEY'); return; }
@@ -1440,66 +1493,39 @@ Return a JSON array of ${ARTICLES_PER_CATEGORY} FRESH trending topics NOT covere
     setHistoryGenerating(true);
     setHistoryDone(null);
     setHistoryLogs([]);
-    clearSessionImageCache(); // fresh image pool for history article
+    clearSessionImageCache();
 
-    let keyIndex      = 0;
-    const exhausted: Record<number, number> = {};
-
-    const getKey = () => {
-      const now = Date.now();
-      for (let i = 0; i < groqKeys.length; i++) {
-        const idx = (keyIndex + i) % groqKeys.length;
-        if (!exhausted[idx] || exhausted[idx] < now) { keyIndex = idx; return groqKeys[idx]; }
-      }
-      keyIndex = 0; return groqKeys[0];
-    };
+    // Key rotation state — same pattern as main pipeline
+    let keyIndex = 0;
+    const keyExhausted: Record<number, number> = {};
+    const keyIndexRef = { value: 0 };
 
     const hlog = (msg: string, type: GenLog['type'] = 'info') => {
-      setHistoryLogs(prev => [...prev, { id: Date.now() + Math.random(), message: msg, type, ts: new Date().toLocaleTimeString() }]);
+      setHistoryLogs(prev => [...prev, {
+        id: Date.now() + Math.random(), message: msg, type,
+        ts: new Date().toLocaleTimeString(),
+      }]);
     };
 
-    const groqReq = async (messages: any[], maxTokens: number): Promise<string | null> => {
-      for (let attempt = 1; attempt <= groqKeys.length * 4; attempt++) {
-        const keyIdx = keyIndex;
-        const key    = getKey();
-        try {
-          const ctrl = new AbortController();
-          const t    = setTimeout(() => ctrl.abort(), 60_000);
-          const res  = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST', signal: ctrl.signal,
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-            body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages, max_tokens: maxTokens, temperature: 0.75 }),
-          });
-          clearTimeout(t);
-          if (res.status === 429) {
-            const body = await res.json().catch(() => ({}));
-            const msg  = body?.error?.message ?? '';
-            if (msg.includes('tokens per day') || msg.includes('TPD')) {
-              hlog(`🔴 Key #${keyIdx + 1} daily limit — rotating`, 'warn');
-              exhausted[keyIdx] = Date.now() + 24 * 60 * 60 * 1000;
-              continue;
-            }
-            const wait = 62_000 + attempt * 2_000;
-            hlog(`⏳ RPM limit — waiting ${Math.round(wait / 1000)}s`, 'warn');
-            await sleep(wait); continue;
-          }
-          if (!res.ok) { await sleep(attempt * 5_000); continue; }
-          const data = await res.json();
-          return data?.choices?.[0]?.message?.content?.trim() ?? null;
-        } catch (e: any) {
-          if (e?.name === 'AbortError') hlog('⏰ Timeout — retrying', 'warn');
-          else hlog(`⚠ Error: ${e?.message}`, 'warn');
-          await sleep(attempt * 4_000);
-        }
-      }
-      return null;
-    };
+    // Use the SAME groqRequest function as main pipeline — has full key rotation
+    const hGroqReq = (messages: { role: string; content: string }[], maxTokens: number, label: string) =>
+      groqRequest(
+        groqKeys[keyIndexRef.value],  // always use current key from ref
+        messages,
+        maxTokens,
+        label,
+        hlog,
+        groqKeys,
+        keyExhausted,
+        keyIndexRef
+        // no pipelineSignal for history — it has its own stop mechanism
+      );
 
     try {
       hlog('📜 Starting Hidden History pipeline...', 'info');
       hlog(`📚 ${HISTORY_TOPIC_POOL.length} topic categories available`, 'info');
 
-      // ── Step 1: Get previously covered history titles ───────────────────────
+      // ── Step 1: Get previously covered titles ──────────────────────────────
       const { data: prev } = await supabase
         .from('articles')
         .select('title')
@@ -1510,131 +1536,140 @@ Return a JSON array of ${ARTICLES_PER_CATEGORY} FRESH trending topics NOT covere
       const prevTitles = (prev ?? []).map((a: any) => `- ${a.title}`).join('\n');
       hlog(`📖 Previously covered: ${prev?.length ?? 0} history articles`, 'info');
 
-      // ── Step 2: Pick random topic category ─────────────────────────────────
+      // ── Step 2: Pick topic theme + specific subject ─────────────────────────
       const topicCategory = HISTORY_TOPIC_POOL[Math.floor(Math.random() * HISTORY_TOPIC_POOL.length)];
       hlog(`\n🎯 Topic theme: "${topicCategory}"`, 'info');
-
-      // ── Step 3: Pick a specific subject ────────────────────────────────────
       hlog('🤖 Picking specific historical subject...', 'progress');
-      const subjectRaw = await groqReq([
+
+      // CALL 1: Pick subject — short call, low tokens, same format as main pipeline
+      const subjectRaw = await hGroqReq([
         {
           role: 'system',
           content:
-            `You are a historian specialising in obscure, genuinely surprising true stories from Indian and world history.
-
-` +
-            `Pick ONE specific, real, verifiable subject that fits: "${topicCategory}"
-
-` +
-            `RULES:
-` +
-            `- Must be 100% real and historically verified — no myths
-` +
-            `- Must be genuinely obscure — not taught in school
-` +
-            `- Must have specific details: real names, real dates, real numbers
-` +
-            `- Must NOT be any of these: 
-${prevTitles || '(none yet)'}
-
-` +
-            `Reply with ONLY the subject as a compelling title (10-15 words).
-` +
-            `Example: "Rani Abbakka Chowta: The Queen Who Defeated Portuguese Warships Four Times"`,
+            `You are a historian specialising in obscure, surprising true stories from Indian history. ` +
+            `Pick ONE specific, real, verifiable subject fitting: "${topicCategory}". ` +
+            `It must be obscure, have specific names/dates/numbers, NOT be any of these: ${prevTitles || '(none)'}. ` +
+            `Reply with ONLY a compelling title (10-15 words). No JSON. No explanation. Just the title.`,
         },
-        { role: 'user', content: `Pick this week's history subject. Make it surprising and specific.` },
-      ], 80);
+        { role: 'user', content: `Pick the history subject. Surprising and specific.` },
+      ], 80, 'history:subject');
 
-      if (!subjectRaw) { hlog('✗ Could not pick subject', 'error'); return; }
-      const subject = subjectRaw.trim().replace(/^["']|["']$/g, '');
+      if (!subjectRaw) { hlog('✗ Could not pick subject — check Groq keys', 'error'); return; }
+      const subject = subjectRaw.trim().replace(/^["'`]|["'`]$/g, '');
       hlog(`\n📌 Subject: "${subject}"`, 'success');
+
+      await sleep(3000);
+
+      // ── Step 3: Write article in TWO parts (avoids token truncation) ─────────
+      // Part A: Hook + Setup + Rise (first half ~600-700 words)
+      hlog('\n✍️  Writing Part 1 of article...', 'progress');
+
+      const part1Raw = await hGroqReq([
+        {
+          role: 'system',
+          content:
+            `You are ${AUTHOR.name}, ${AUTHOR.tagline}. ${AUTHOR.bio}\n\n` +
+            `Write the FIRST HALF of a deep-dive history article about: "${subject}"\n\n` +
+            `Write these sections AS FLOWING PARAGRAPHS with ## headings and **bold** key facts:\n\n` +
+            `## [Most shocking fact as heading]\n` +
+            `(2-3 sentences) Open with the most surprising fact. **Bold** the key number/detail.\n\n` +
+            `## The World They Lived In\n` +
+            `(100-150 words) Who, what, when, where. **Specific dates**, **real names**, **exact numbers**.\n\n` +
+            `## [Name the subject's greatest achievement]\n` +
+            `(300-350 words) Most impressive facts nobody else covers. **Bold** every key figure.\n\n` +
+            `RULES: Paragraphs separated by \\n\\n. No bullet points. Every paragraph has one bolded fact.\n` +
+            `IMPORTANT: Return ONLY the article text. No JSON. No title. Just the formatted paragraphs.`,
+        },
+        { role: 'user', content: `Write Part 1 for: "${subject}". Raw text only, no JSON.` },
+      ], 1500, 'history:part1');
+
+      if (!part1Raw || part1Raw.length < 200) {
+        hlog('✗ Part 1 generation failed', 'error');
+        hlog(`   Length: ${part1Raw?.length ?? 0} | Preview: ${part1Raw?.substring(0, 150) ?? 'empty'}`, 'info');
+        hlog(`   Using key #${keyIndexRef.value + 1} of ${groqKeys.length}`, 'info');
+        return;
+      }
+      hlog(`   ✅ Part 1: ${part1Raw.split(/\s+/).length} words`, 'success');
 
       await sleep(4000);
 
-      // ── Step 4: Write 1200-1500 word article ───────────────────────────────
-      hlog('\n✍️ Writing 1200-1500 word deep-dive...', 'progress');
-      hlog('   (This takes ~40 seconds — large article)', 'info');
+      // Part B: Forgotten + Mystery + Why It Matters + Closer (second half ~500-600 words)
+      hlog('✍️  Writing Part 2 of article...', 'progress');
 
-      const articleRaw = await groqReq([
+      const part2Raw = await hGroqReq([
         {
           role: 'system',
           content:
-            `You are ${AUTHOR.name}, ${AUTHOR.tagline}.
+            `You are ${AUTHOR.name}, ${AUTHOR.tagline}. ${AUTHOR.bio}\n\n` +
+            `Write the SECOND HALF of a deep-dive history article about: "${subject}"\n\n` +
+            `Continue with these sections AS FLOWING PARAGRAPHS with ## headings and **bold** key facts:\n\n` +
+            `## The Part History Forgot\n` +
+            `(200-250 words) What was deliberately buried and why. Be opinionated. **Bold** what was erased.\n\n` +
+            `## [The Fall or The Mystery — name it specifically]\n` +
+            `(150-200 words) How it ended. What remains unexplained. **Bold** the unresolved question.\n\n` +
+            `## Why India Should Care Today\n` +
+            `(100-150 words) Direct connection to modern India. No platitudes.\n\n` +
+            `## The Line That Says It All\n` +
+            `(1 sentence) Sharp, shareable one-liner that sticks in the reader's mind.\n\n` +
+            `RULES: Paragraphs separated by \\n\\n. No bullet points. Every paragraph has one bolded fact.\n` +
+            `IMPORTANT: Return ONLY the article text. No JSON. No title. Just the formatted paragraphs.`,
+        },
+        { role: 'user', content: `Write Part 2 for: "${subject}". Raw text only, no JSON.` },
+      ], 1500, 'history:part2');
 
-YOUR STYLE:
-${AUTHOR.bio}
+      if (!part2Raw || part2Raw.length < 100) {
+        hlog('⚠ Part 2 failed — publishing with Part 1 only', 'warn');
+      }
+      hlog(`   ✅ Part 2: ${(part2Raw ?? '').split(/\s+/).length} words`, 'success');
 
-` +
-            `ARTICLE STRUCTURE — flowing paragraphs, NO headers, NO bullets:
+      // Combine both parts
+      const fullContent = [part1Raw.trim(), (part2Raw ?? '').trim()].filter(Boolean).join('\n\n');
+      const wordCount   = fullContent.split(/\s+/).length;
+      hlog(`\n📝 Total: ${wordCount} words`, 'success');
 
-` +
-            `1. THE HOOK (2-3 sentences): Most shocking fact. Makes reader stop scrolling.
-` +
-            `2. THE SETUP (100-150 words): Who, what, when, where. Specific dates, places, names.
-` +
-            `3. THE RISE / THE STORY (300-400 words): Most impressive part. Pack in facts nobody else covers.
-` +
-            `4. THE FORGOTTEN PART (200-250 words): The twist. What was deliberately buried and why.
-` +
-            `5. THE MYSTERY OR THE FALL (150-200 words): How did it end? What remains unexplained?
-` +
-            `6. WHY IT MATTERS TODAY (100-150 words): Connect to modern India. Be sharp and direct.
-` +
-            `7. THE CLOSER (1 sentence): Sharp one-liner that sticks in the reader's mind.
+      await sleep(3000);
 
-` +
-            `RULES:
-` +
-            `- Total length: 1200-1500 words
-` +
-            `- Every paragraph: at least one specific fact (date, number, name)
-` +
-            `- NO "it is worth noting", "in conclusion", Wikipedia-neutral tone
-` +
-            `- Paragraphs separated by \n\n
+      // CALL 4: Get metadata (title, summary, image queries) — small separate call
+      hlog('🏷  Generating title, summary, image queries...', 'progress');
 
-` +
-            `IMAGE QUERIES:
-` +
-            `Return "image_queries": exactly 8 Pexels search strings.
-` +
-            `Mix of: place (ruins, landscape), era (architecture, artifacts), action (battle, trade), atmosphere.
-` +
-            `3-5 words each. No person names.
-
-` +
-            `Return ONLY raw JSON:
-` +
-            `{ "title": "compelling 10-20 word title", "summary": "3 punchy sentences teaser", "content": "1200-1500 word article", "score": 0-10, "image_queries": ["q1","q2","q3","q4","q5","q6","q7","q8"] }`,
+      const metaRaw = await hGroqReq([
+        {
+          role: 'system',
+          content:
+            `Return ONLY raw valid JSON — no markdown fences, no backticks, no extra text.\n` +
+            `JSON must be on a single line. Use \\n for newlines inside strings.\n` +
+            `Format: { "title": "10-20 word compelling title", "summary": "3 punchy teaser sentences without newlines", "score": 8.5, "image_queries": ["query1","query2","query3","query4","query5","query6","query7","query8"] }`,
         },
         {
           role: 'user',
-          content: `Write a deep-dive history article about: "${subject}"
-
-Make it the most detailed, surprising account of this subject that exists on the internet. Paragraph by paragraph. Raw JSON only.`,
+          content:
+            `Generate metadata for this history article about: "${subject}"\n\n` +
+            `Article preview: ${fullContent.substring(0, 400)}\n\n` +
+            `Return a compelling title, 3-sentence summary, score 0-10, and 8 Pexels image queries ` +
+            `(mix of ruins, artifacts, landscapes, architecture — no person names). Raw JSON only.`,
         },
-      ], 3000);
+      ], 600, 'history:meta');
 
-      const parsed = articleRaw ? extractJSON<any>(articleRaw) : null;
-      if (!parsed?.title || !parsed?.content || parsed.content.length < 500) {
-        hlog('✗ Article generation failed — try again', 'error');
-        return;
-      }
+      // Parse metadata — title/summary/score/images
+      interface HistoryMeta { title: string; summary: string; score: number; image_queries: string[] }
+      const meta = metaRaw ? extractJSON<HistoryMeta>(metaRaw) : null;
 
-      const wordCount = parsed.content.split(/\s+/).length;
-      const score     = Math.min(10, Math.max(0, parseFloat(String(parsed.score)) || 8.0));
-      hlog(`\n✅ Article written! ${wordCount} words | score ${score.toFixed(1)}`, 'success');
-      hlog(`   Title: "${parsed.title}"`, 'info');
+      const title    = meta?.title    ?? subject.substring(0, 200);
+      const summary  = meta?.summary  ?? fullContent.substring(0, 300).replace(/\n/g, ' ');
+      const score    = meta?.score    ?? 8.5;
+      const imgQ     = Array.isArray(meta?.image_queries) ? meta.image_queries : HISTORY_IMAGE_FALLBACKS;
+
+      hlog(`   Title: "${title}"`, 'info');
 
       // ── Step 5: Save to DB ──────────────────────────────────────────────────
       const { data: saved, error: saveErr } = await supabase
         .from('articles')
         .insert({
-          title:          parsed.title.substring(0, 255),
+          title:          title.substring(0, 255),
           source_url:     `https://ai-generated/history/${Date.now()}`,
           source_name:    AUTHOR.name,
-          summary:        parsed.summary?.substring(0, 500) ?? parsed.content.substring(0, 300),
-          raw_content:    parsed.content,
+          summary:        summary.substring(0, 500),
+          raw_content:    fullContent,
           category:       'history',
           score,
           published_date: new Date().toISOString(),
@@ -1651,17 +1686,9 @@ Make it the most detailed, surprising account of this subject that exists on the
       hlog(`💾 Saved as article #${articleId}`, 'info');
 
       // ── Step 6: Fetch 8 images ──────────────────────────────────────────────
-      hlog('\n🖼 Fetching 8 history images...', 'progress');
-      const imageQueries: string[] = Array.isArray(parsed.image_queries) ? parsed.image_queries : [];
-
+      hlog('\n🖼  Fetching history images...', 'progress');
       const imageCount = await fetchAndSaveImages(
-        pexelsKey,
-        articleId,
-        parsed.title,
-        'history',
-        imageQueries,
-        hlog,
-        undefined
+        pexelsKey, articleId, title, 'history', imgQ, hlog, omdbKey
       );
       hlog(`📸 ${imageCount} images saved`, imageCount >= HISTORY_MIN_IMAGES ? 'success' : 'warn');
 
@@ -1669,30 +1696,28 @@ Make it the most detailed, surprising account of this subject that exists on the
       if (score >= HISTORY_AUTO_PUBLISH_SCORE && imageCount >= HISTORY_MIN_IMAGES) {
         const { data: verify } = await supabase
           .from('articles').select('raw_content, image_url').eq('id', articleId).single();
-
-        if ((verify as any)?.raw_content?.length > 500 && (verify as any)?.image_url) {
+        if ((verify as any)?.raw_content?.length > 300 && (verify as any)?.image_url) {
           const { error: pubErr } = await supabase
             .from('articles')
             .update({ is_published: true, is_draft: false, updated_at: new Date().toISOString() })
             .eq('id', articleId);
-
           if (!pubErr) {
             hlog(`\n🚀 PUBLISHED! Article #${articleId} is live`, 'success');
-            setHistoryDone(`✅ Published: "${parsed.title}"\n${wordCount} words · score ${score.toFixed(1)} · ${imageCount} images`);
+            setHistoryDone(`✅ Published: "${title}"\n${wordCount} words · score ${score.toFixed(1)} · ${imageCount} images`);
           } else {
-            hlog(`⚠ Publish failed: ${pubErr.message} — saved as draft`, 'warn');
-            setHistoryDone(`📋 Saved as draft: "${parsed.title}" (publish failed)`);
+            hlog(`⚠ Publish failed — saved as draft`, 'warn');
+            setHistoryDone(`📋 Draft: "${title}" (publish failed)`);
           }
         } else {
-          hlog(`⚠ DB check failed — saved as draft`, 'warn');
-          setHistoryDone(`📋 Saved as draft: "${parsed.title}" (image/content not verified)`);
+          hlog(`⚠ DB check failed — draft`, 'warn');
+          setHistoryDone(`📋 Draft: "${title}"`);
         }
       } else {
         const reason = imageCount < HISTORY_MIN_IMAGES
           ? `only ${imageCount} images (need ${HISTORY_MIN_IMAGES})`
           : `score ${score.toFixed(1)} < ${HISTORY_AUTO_PUBLISH_SCORE}`;
         hlog(`📋 Saved as draft (${reason})`, 'info');
-        setHistoryDone(`📋 Saved as draft: "${parsed.title}"\nReason: ${reason}`);
+        setHistoryDone(`📋 Draft: "${title}"\nReason: ${reason}`);
       }
 
       fetchArticles();
@@ -1704,6 +1729,7 @@ Make it the most detailed, surprising account of this subject that exists on the
       setHistoryGenerating(false);
     }
   };
+
 
   const handleStop = () => {
     stopRef.current = true;

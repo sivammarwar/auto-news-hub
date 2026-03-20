@@ -99,6 +99,69 @@ interface ArticleImage {
   height?: number;
 }
 
+
+// ─── RichBlock — renders a paragraph with ## headings and **bold** support ────
+// History articles use ## Section Heading and **bold text** markdown syntax.
+// Regular articles are plain paragraphs. This component handles both.
+const RichBlock = ({ text }: { text: string }) => {
+  // Skip literal \\n strings or whitespace-only blocks
+  if (!text || /^[\\n\\r\\t\\s]+$/.test(text) || text === '\\n' || text === '\n') return null;
+
+  // If block contains a ## heading followed by content on the next line,
+  // split them and render heading + paragraph separately
+  if (text.includes('\n') && text.split('\n')[0].startsWith('## ')) {
+    const lines  = text.split('\n');
+    const heading = lines[0].slice(3).trim();
+    const rest    = lines.slice(1).join('\n').trim();
+    return (
+      <>
+        <h2
+          className="font-bold text-foreground mt-10 mb-4 leading-tight border-l-4 border-primary pl-4"
+          style={{ fontSize: 'clamp(1.15rem, 3vw, 1.4rem)' }}
+        >
+          {heading}
+        </h2>
+        {rest && <RichBlock text={rest} />}
+      </>
+    );
+  }
+
+  // Pure ## heading block
+  if (text.startsWith('## ')) {
+    return (
+      <h2
+        className="font-bold text-foreground mt-10 mb-4 leading-tight border-l-4 border-primary pl-4"
+        style={{ fontSize: 'clamp(1.15rem, 3vw, 1.4rem)' }}
+      >
+        {text.slice(3).trim()}
+      </h2>
+    );
+  }
+
+  // Regular paragraph — parse **bold** inline
+  const parts = text.split(/\*\*(.+?)\*\*/g);
+
+  return (
+    <p
+      className="text-foreground leading-[1.85] mb-5 sm:mb-7"
+      style={{ fontSize: 'clamp(1rem, 2.5vw, 1.125rem)' }}
+    >
+      {parts.map((part, i) =>
+        i % 2 === 1 ? (
+          <strong
+            key={i}
+            className="font-bold text-foreground bg-primary/8 px-0.5 rounded"
+          >
+            {part}
+          </strong>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </p>
+  );
+};
+
 const ArticlePage = () => {
   const { id } = useParams<{ id: string }>();
   const { data: article, isLoading } = useArticle(id ?? '');
@@ -173,7 +236,16 @@ const ArticlePage = () => {
 
   // Build interleaved content: paragraphs + images (skip hero image at index 0)
   const rawContent = article.raw_content || article.summary || '';
-  const paragraphs = rawContent.split(/\n\n+/).map(p => p.trim()).filter(Boolean);
+  // Smart split: ensure ## headings always start their own block.
+  // Groq sometimes uses single \n before headings instead of \n\n.
+  const normalised = rawContent
+    .replace(/\r\n/g, '\n')
+    .replace(/\n(## )/g, '\n\n$1');
+  const paragraphs = normalised
+    .split(/\n\n+/)
+    .map((p: string) => p.trim())
+    // Remove literal '\n' strings that Groq sometimes writes as paragraph separators
+    .filter((p: string) => p.length > 0 && p !== '\\n' && p !== '\n' && !/^[\\n\s]+$/.test(p));
   const bodyImages  = images.slice(1); // index 0 is used as hero
   const blocks: (string | ArticleImage)[] = [];
   const insertEvery = bodyImages.length > 0
@@ -267,15 +339,7 @@ const ArticlePage = () => {
           <div className="max-w-3xl mx-auto px-4 sm:px-6 pb-12">
             {blocks.map((block, idx) => {
               if (typeof block === 'string') {
-                return (
-                  <p
-                    key={idx}
-                    className="text-foreground leading-[1.85] mb-5 sm:mb-7"
-                    style={{ fontSize: 'clamp(1rem, 2.5vw, 1.125rem)' }}
-                  >
-                    {block}
-                  </p>
-                );
+                return <RichBlock key={idx} text={block} />;
               }
 
               const img = block as ArticleImage;
