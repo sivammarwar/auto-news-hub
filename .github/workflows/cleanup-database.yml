@@ -1,0 +1,21 @@
+name: Cleanup Database
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # midnight UTC daily
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger cleanup
+        run: |
+          RESPONSE=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+            -X GET https://auto-news-hub.vercel.app/api/cron/cleanup-database \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            --max-time 60)
+          echo "Status: $RESPONSE"
+          cat /tmp/response.json
+          [ "$RESPONSE" = "200" ] || exit 1

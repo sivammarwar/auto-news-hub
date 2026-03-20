@@ -1,0 +1,33 @@
+name: Generate Articles
+
+on:
+  schedule:
+    - cron: "45 13 * * *"  # 1:45 PM UTC daily
+  workflow_dispatch:         # manual trigger button in GitHub Actions tab
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360     # 6 hour max — enough for your full pipeline
+
+    steps:
+      - name: Trigger article generation
+        run: |
+          echo "Starting article generation at $(date)"
+          
+          RESPONSE=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+            -X GET https://auto-news-hub.vercel.app/api/cron/generate-articles \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+            --max-time 21600)
+          
+          echo "HTTP Status: $RESPONSE"
+          echo "Response body:"
+          cat /tmp/response.json
+          
+          if [ "$RESPONSE" != "200" ]; then
+            echo "❌ Pipeline failed with status $RESPONSE"
+            exit 1
+          fi
+          
+          echo "✅ Pipeline completed successfully"
