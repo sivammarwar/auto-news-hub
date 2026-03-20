@@ -12,15 +12,11 @@
   "crons": [
     {
       "path": "/api/cron/generate-articles",
-      "schedule": "0 2 * * *"
+      "schedule": "45 13 * * *"
     },
     {
       "path": "/api/cron/fetch-viral",
       "schedule": "0 8 * * *"
-    },
-    {
-      "path": "/api/cron/fetch-history",
-      "schedule": "30 14 * * 6"
     },
     {
       "path": "/api/cron/cleanup-database",
