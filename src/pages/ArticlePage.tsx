@@ -8,9 +8,6 @@ import ArticleCard from '@/components/ArticleCard';
 import { useArticle, useRelatedArticles } from '@/hooks/useArticles';
 import { supabase } from '@/integrations/supabase/client';
 
-// ─── SEO head manager ──────────────────────────────────────────────────────────
-// Injects title, meta description, Open Graph and Twitter Card tags into <head>.
-// Works with React Router (SPA) — updates tags on every route change.
 const useSeoHead = ({
   title,
   description,
@@ -29,13 +26,11 @@ const useSeoHead = ({
   category?: string;
 }) => {
   useEffect(() => {
-    const siteName  = 'Signal';
+    const siteName  = 'Hidden History Facts';
     const fullTitle = `${title} | ${siteName}`;
 
-    // ── <title> ──────────────────────────────────────────────────────────
     document.title = fullTitle;
 
-    // ── Helper: set or create a <meta> tag ───────────────────────────────
     const setMeta = (selector: string, content: string) => {
       let el = document.querySelector(selector) as HTMLMetaElement | null;
       if (!el) {
@@ -58,32 +53,27 @@ const useSeoHead = ({
       el.setAttribute('href', href);
     };
 
-    // ── Standard meta ────────────────────────────────────────────────────
     setMeta('meta[name="description"]',        description.slice(0, 160));
     setMeta('meta[name="robots"]',             'index, follow');
-    setMeta('meta[name="author"]',             'Signal');
-    if (category) setMeta('meta[name="keywords"]', `${category}, india news, signal news`);
+    setMeta('meta[name="author"]',             'Hidden History Facts');
+    if (category) setMeta('meta[name="keywords"]', `${category}, hidden history, history facts`);
 
-    // ── Canonical URL ────────────────────────────────────────────────────
     setLink('canonical', url);
 
-    // ── Open Graph (Facebook, WhatsApp, LinkedIn previews) ───────────────
     setMeta('meta[property="og:title"]',       fullTitle);
     setMeta('meta[property="og:description"]', description.slice(0, 200));
     setMeta('meta[property="og:url"]',         url);
     setMeta('meta[property="og:type"]',        type);
     setMeta('meta[property="og:site_name"]',   siteName);
-    if (image) setMeta('meta[property="og:image"]', image);
-    if (publishedAt) setMeta('meta[property="article:published_time"]', publishedAt);
-    if (category)    setMeta('meta[property="article:section"]',        category);
+    if (image)       setMeta('meta[property="og:image"]',                image);
+    if (publishedAt) setMeta('meta[property="article:published_time"]',  publishedAt);
+    if (category)    setMeta('meta[property="article:section"]',         category);
 
-    // ── Twitter Card ─────────────────────────────────────────────────────
     setMeta('meta[name="twitter:card"]',        image ? 'summary_large_image' : 'summary');
     setMeta('meta[name="twitter:title"]',       fullTitle);
     setMeta('meta[name="twitter:description"]', description.slice(0, 200));
     if (image) setMeta('meta[name="twitter:image"]', image);
 
-    // Cleanup: reset to site defaults when navigating away
     return () => {
       document.title = siteName;
     };
@@ -99,18 +89,11 @@ interface ArticleImage {
   height?: number;
 }
 
-
-// ─── RichBlock — renders a paragraph with ## headings and **bold** support ────
-// History articles use ## Section Heading and **bold text** markdown syntax.
-// Regular articles are plain paragraphs. This component handles both.
 const RichBlock = ({ text }: { text: string }) => {
-  // Skip literal \\n strings or whitespace-only blocks
   if (!text || /^[\\n\\r\\t\\s]+$/.test(text) || text === '\\n' || text === '\n') return null;
 
-  // If block contains a ## heading followed by content on the next line,
-  // split them and render heading + paragraph separately
   if (text.includes('\n') && text.split('\n')[0].startsWith('## ')) {
-    const lines  = text.split('\n');
+    const lines   = text.split('\n');
     const heading = lines[0].slice(3).trim();
     const rest    = lines.slice(1).join('\n').trim();
     return (
@@ -126,7 +109,6 @@ const RichBlock = ({ text }: { text: string }) => {
     );
   }
 
-  // Pure ## heading block
   if (text.startsWith('## ')) {
     return (
       <h2
@@ -138,7 +120,6 @@ const RichBlock = ({ text }: { text: string }) => {
     );
   }
 
-  // Regular paragraph — parse **bold** inline
   const parts = text.split(/\*\*(.+?)\*\*/g);
 
   return (
@@ -148,10 +129,7 @@ const RichBlock = ({ text }: { text: string }) => {
     >
       {parts.map((part, i) =>
         i % 2 === 1 ? (
-          <strong
-            key={i}
-            className="font-bold text-foreground bg-primary/8 px-0.5 rounded"
-          >
+          <strong key={i} className="font-bold text-foreground bg-primary/8 px-0.5 rounded">
             {part}
           </strong>
         ) : (
@@ -186,16 +164,13 @@ const ArticlePage = () => {
     fetchImages();
   }, [id]);
 
-  // ── SEO hook MUST be called here — before any early returns ──────────────
-  // Rules of Hooks: hooks cannot be called conditionally or after early returns.
-  // We pass safe defaults when article is null/loading; they update when article loads.
-  const siteUrl    = typeof window !== 'undefined' ? window.location.origin : '';
+  const siteUrl    = typeof window !== 'undefined' ? window.location.origin : 'https://www.hiddenhistoryfacts.com';
   const articleUrl = `${siteUrl}/article/${id ?? ''}`;
   const heroImg    = images[0]?.image_url || article?.image_url || '';
 
   useSeoHead({
-    title:       article?.title       ?? 'Signal',
-    description: article?.summary?.slice(0, 160) ?? 'Latest news from Signal',
+    title:       article?.title                ?? 'Hidden History Facts',
+    description: article?.summary?.slice(0, 160) ?? 'Discover hidden history facts from around the world.',
     image:       heroImg,
     url:         articleUrl,
     type:        'article',
@@ -234,19 +209,15 @@ const ArticlePage = () => {
 
   const pubDate = format(new Date(article.published_date), 'MMMM d, yyyy');
 
-  // Build interleaved content: paragraphs + images (skip hero image at index 0)
-  const rawContent = article.raw_content || article.summary || '';
-  // Smart split: ensure ## headings always start their own block.
-  // Groq sometimes uses single \n before headings instead of \n\n.
-  const normalised = rawContent
+  const rawContent  = article.raw_content || article.summary || '';
+  const normalised  = rawContent
     .replace(/\r\n/g, '\n')
     .replace(/\n(## )/g, '\n\n$1');
-  const paragraphs = normalised
+  const paragraphs  = normalised
     .split(/\n\n+/)
     .map((p: string) => p.trim())
-    // Remove literal '\n' strings that Groq sometimes writes as paragraph separators
     .filter((p: string) => p.length > 0 && p !== '\\n' && p !== '\n' && !/^[\\n\s]+$/.test(p));
-  const bodyImages  = images.slice(1); // index 0 is used as hero
+  const bodyImages  = images.slice(1);
   const blocks: (string | ArticleImage)[] = [];
   const insertEvery = bodyImages.length > 0
     ? Math.max(2, Math.floor(paragraphs.length / bodyImages.length))
@@ -273,11 +244,7 @@ const ArticlePage = () => {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
         >
-
-          {/* ── Header ──────────────────────────────────────────────────── */}
           <div className="max-w-3xl mx-auto px-4 sm:px-6 pt-10 sm:pt-14 pb-6">
-
-            {/* Breadcrumb */}
             <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-5">
               <Link
                 to={`/category/${article.category}`}
@@ -291,7 +258,6 @@ const ArticlePage = () => {
               </span>
             </div>
 
-            {/* Title */}
             <h1
               className="font-bold tracking-tightest leading-[0.95] text-foreground mb-6"
               style={{
@@ -302,7 +268,6 @@ const ArticlePage = () => {
               {article.title}
             </h1>
 
-            {/* Summary pull-quote if different from body */}
             {article.summary && article.summary !== rawContent && (
               <p
                 className="text-muted-foreground leading-relaxed mb-6 border-l-4 border-primary pl-4 italic"
@@ -313,7 +278,6 @@ const ArticlePage = () => {
             )}
           </div>
 
-          {/* ── Hero image — full bleed mobile, rounded on sm+ ──────────── */}
           {(heroImage || article.image_url) && (
             <div className="w-full mb-8">
               <div className="max-w-3xl mx-auto sm:px-6">
@@ -335,16 +299,13 @@ const ArticlePage = () => {
             </div>
           )}
 
-          {/* ── Article body ─────────────────────────────────────────────── */}
           <div className="max-w-3xl mx-auto px-4 sm:px-6 pb-12">
             {blocks.map((block, idx) => {
               if (typeof block === 'string') {
                 return <RichBlock key={idx} text={block} />;
               }
-
               const img = block as ArticleImage;
               return (
-                // negative margin breaks out of container on mobile = full bleed
                 <figure key={img.id} className="my-8 sm:my-10 -mx-4 sm:mx-0">
                   <div className="overflow-hidden sm:rounded-xl bg-muted">
                     <img
@@ -364,17 +325,14 @@ const ArticlePage = () => {
               );
             })}
 
-            {/* ── Author byline ─────────────────────────────────────────── */}
             <div className="border-t border-border mt-10 pt-6">
               <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-muted-foreground">
                 Written by <span className="text-foreground font-bold">{article.source_name}</span>
               </span>
             </div>
           </div>
-
         </motion.article>
 
-        {/* ── Related articles ─────────────────────────────────────────── */}
         {related && related.length > 0 && (
           <section className="max-w-screen-xl mx-auto px-4 sm:px-6 pb-16">
             <div className="border-t border-border pt-10 mb-6">
