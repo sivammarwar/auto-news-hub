@@ -1,134 +1,125 @@
-// api/sitemap.xml.js
-// ════════════════════════════════════════════════════════════════════════════
-// DYNAMIC SITEMAP GENERATOR
-//
-// Accessed at: https://yourdomain.com/sitemap.xml
-// Submit THIS URL once to Google Search Console — never update again.
-// Google re-crawls it automatically. As articles grow from 60 to 600+,
-// the sitemap always reflects the current state of your database.
-//
-// Google sitemap limits: 50,000 URLs and 50MB per file.
-// At 60 articles/day you'd hit that in ~2 years — split into sitemap index then.
-// ════════════════════════════════════════════════════════════════════════════
-
+// api/sitemap.js
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
-  process.env.VITE_SUPABASE_URL  || process.env.SUPABASE_URL,
+  process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+const DOMAIN = 'https://www.hiddenhistoryfacts.com';
+
 const ALL_CATEGORIES = [
-  'cricket', 'bollywood', 'technology', 'viral',
-  'business', 'sports', 'india', 'world', 'health', 'science', 'history', 'stocks',
+  'history',
+  'ancient-civilizations',
+  'medieval-feudal',
+  'age-of-exploration',
+  'revolutions-politics',
+  'world-wars-conflicts',
+  'colonial-imperial',
+  'human-rights-movements',
+  'science-technology',
+  'religion-philosophy',
+  'cultural-social',
+  'economic-trade',
+  'military-warfare',
+  'regional-history',
+  'archaeology-mysteries',
+  'famous-figures',
+  'beyond-human-limits',
+  'historys-unsung-heroes',
 ];
 
-// Change frequency hints for Google
 const FREQ = {
-  home:     'hourly',
+  home:     'daily',
   category: 'daily',
-  article:  'weekly',   // articles don't change after publish
+  article:  'weekly',
   legal:    'monthly',
 };
 
 export default async function handler(req, res) {
   try {
-    // ── Determine canonical domain ────────────────────────────────────────
-    // Priority: SITE_URL env var → request host → fallback
-    // Set SITE_URL=https://yourdomain.com in Vercel environment variables
-    const domain = process.env.SITE_URL
-      || (req.headers.host ? `https://${req.headers.host}` : null)
-      || 'https://yourdomain.com'; // ← replace with your actual domain
-
-    console.log(`Generating sitemap for: ${domain}`);
     const today = new Date().toISOString().split('T')[0];
 
-    // ── Fetch all published articles from DB ─────────────────────────────
+    // Fetch all published articles
     const { data: articles, error } = await supabase
       .from('articles')
-      .select('id, title, category, published_date, updated_at')
+      .select('id, slug, published_date, updated_at')
       .eq('is_published', true)
       .order('published_date', { ascending: false })
-      .limit(50000); // Google's sitemap limit
+      .limit(50000);
 
     if (error) throw error;
 
     const articleCount = articles?.length ?? 0;
-    console.log(`Found ${articleCount} published articles`);
+    console.log(`Sitemap: found ${articleCount} published articles`);
 
-    // ── Build XML ─────────────────────────────────────────────────────────
-    const urls: string[] = [];
+    const urls = [];
 
     // 1. Homepage
-    urls.push(url(domain, '/', 1.0, FREQ.home, today));
+    urls.push(makeUrl(`${DOMAIN}/`, 1.0, FREQ.home, today));
 
-    // 2. All category pages
+    // 2. Category pages
     ALL_CATEGORIES.forEach(cat => {
-      urls.push(url(domain, `/category/${cat}`, 0.9, FREQ.category, today));
+      urls.push(makeUrl(`${DOMAIN}/category/${cat}`, 0.9, FREQ.category, today));
     });
 
-    // 3. Legal + utility pages
-    urls.push(url(domain, '/contact', 0.5, FREQ.legal, today));
-    urls.push(url(domain, '/privacy', 0.3, FREQ.legal, today));
-    urls.push(url(domain, '/terms',   0.3, FREQ.legal, today));
+    // 3. Static pages
+    urls.push(makeUrl(`${DOMAIN}/contact`, 0.5, FREQ.legal, today));
+    urls.push(makeUrl(`${DOMAIN}/privacy`, 0.3, FREQ.legal, today));
+    urls.push(makeUrl(`${DOMAIN}/terms`,   0.3, FREQ.legal, today));
 
-    // 4. All published article pages
+    // 4. Article pages — use slug if your DB has it, otherwise id
     if (articles && articles.length > 0) {
       articles.forEach(article => {
         const lastmod = new Date(article.updated_at || article.published_date)
           .toISOString()
           .split('T')[0];
-        urls.push(url(domain, `/article/${article.id}`, 0.8, FREQ.article, lastmod));
+        const path = article.slug
+          ? `/article/${article.slug}`
+          : `/article/${article.id}`;
+        urls.push(makeUrl(`${DOMAIN}${path}`, 0.8, FREQ.article, lastmod));
       });
     }
 
-    // ── Assemble final XML ────────────────────────────────────────────────
     const xml = [
       '<?xml version="1.0" encoding="UTF-8"?>',
       '<urlset',
       '  xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"',
-      '  xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"',
       '  xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">',
       ...urls,
       '</urlset>',
     ].join('\n');
 
-    console.log(`✓ Sitemap generated — ${urls.length} URLs total (${articleCount} articles)`);
+    console.log(`Sitemap generated: ${urls.length} URLs total`);
 
     res.setHeader('Content-Type', 'application/xml; charset=utf-8');
-    res.setHeader('Cache-Control', 'public, max-age=3600, s-maxage=3600'); // 1 hour cache
-    res.setHeader('X-Sitemap-Count', String(urls.length));
+    res.setHeader('Cache-Control', 'public, max-age=3600, s-maxage=3600');
     res.status(200).send(xml);
 
   } catch (err) {
-    console.error('❌ Sitemap error:', err.message);
-    // Return minimal valid sitemap so Google never gets a hard error
+    console.error('Sitemap error:', err.message);
+    // Always return a valid XML even on error so Google never gets a 500
+    const today = new Date().toISOString().split('T')[0];
     res.setHeader('Content-Type', 'application/xml; charset=utf-8');
-    res.status(200).send(minimalSitemap());
+    res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>${DOMAIN}/</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>`);
   }
 }
 
-// ─── Helper: build a single <url> block ───────────────────────────────────────
-function url(domain, path, priority, changefreq, lastmod) {
+function makeUrl(loc, priority, changefreq, lastmod) {
   return [
     '  <url>',
-    `    <loc>${domain}${path}</loc>`,
+    `    <loc>${loc}</loc>`,
     `    <lastmod>${lastmod}</lastmod>`,
     `    <changefreq>${changefreq}</changefreq>`,
     `    <priority>${priority.toFixed(1)}</priority>`,
     '  </url>',
   ].join('\n');
-}
-
-// ─── Fallback minimal sitemap ─────────────────────────────────────────────────
-function minimalSitemap() {
-  const today = new Date().toISOString().split('T')[0];
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>${process.env.SITE_URL || 'https://yourdomain.com'}/</loc>
-    <lastmod>${today}</lastmod>
-    <priority>1.0</priority>
-  </url>
-</urlset>`;
 }
