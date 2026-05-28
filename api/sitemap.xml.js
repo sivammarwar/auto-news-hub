@@ -1,4 +1,4 @@
-// api/sitemap.js
+// api/sitemap.xml.js
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -29,18 +29,10 @@ const ALL_CATEGORIES = [
   'historys-unsung-heroes',
 ];
 
-const FREQ = {
-  home:     'daily',
-  category: 'daily',
-  article:  'weekly',
-  legal:    'monthly',
-};
-
 export default async function handler(req, res) {
   try {
     const today = new Date().toISOString().split('T')[0];
 
-    // Fetch all published articles
     const { data: articles, error } = await supabase
       .from('articles')
       .select('id, slug, published_date, updated_at')
@@ -50,34 +42,30 @@ export default async function handler(req, res) {
 
     if (error) throw error;
 
-    const articleCount = articles?.length ?? 0;
-    console.log(`Sitemap: found ${articleCount} published articles`);
-
     const urls = [];
 
-    // 1. Homepage
-    urls.push(makeUrl(`${DOMAIN}/`, 1.0, FREQ.home, today));
+    // Homepage
+    urls.push(makeUrl(`${DOMAIN}/`, 1.0, 'daily', today));
 
-    // 2. Category pages
+    // Category pages
     ALL_CATEGORIES.forEach(cat => {
-      urls.push(makeUrl(`${DOMAIN}/category/${cat}`, 0.9, FREQ.category, today));
+      urls.push(makeUrl(`${DOMAIN}/category/${cat}`, 0.9, 'daily', today));
     });
 
-    // 3. Static pages
-    urls.push(makeUrl(`${DOMAIN}/contact`, 0.5, FREQ.legal, today));
-    urls.push(makeUrl(`${DOMAIN}/privacy`, 0.3, FREQ.legal, today));
-    urls.push(makeUrl(`${DOMAIN}/terms`,   0.3, FREQ.legal, today));
+    // Static pages
+    urls.push(makeUrl(`${DOMAIN}/contact`, 0.5, 'monthly', today));
+    urls.push(makeUrl(`${DOMAIN}/privacy`, 0.3, 'monthly', today));
+    urls.push(makeUrl(`${DOMAIN}/terms`,   0.3, 'monthly', today));
 
-    // 4. Article pages — use slug if your DB has it, otherwise id
+    // Article pages
     if (articles && articles.length > 0) {
       articles.forEach(article => {
         const lastmod = new Date(article.updated_at || article.published_date)
-          .toISOString()
-          .split('T')[0];
+          .toISOString().split('T')[0];
         const path = article.slug
           ? `/article/${article.slug}`
           : `/article/${article.id}`;
-        urls.push(makeUrl(`${DOMAIN}${path}`, 0.8, FREQ.article, lastmod));
+        urls.push(makeUrl(`${DOMAIN}${path}`, 0.8, 'weekly', lastmod));
       });
     }
 
@@ -90,7 +78,7 @@ export default async function handler(req, res) {
       '</urlset>',
     ].join('\n');
 
-    console.log(`Sitemap generated: ${urls.length} URLs total`);
+    console.log(`Sitemap: ${urls.length} URLs (${articles?.length ?? 0} articles)`);
 
     res.setHeader('Content-Type', 'application/xml; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=3600, s-maxage=3600');
@@ -98,7 +86,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error('Sitemap error:', err.message);
-    // Always return a valid XML even on error so Google never gets a 500
     const today = new Date().toISOString().split('T')[0];
     res.setHeader('Content-Type', 'application/xml; charset=utf-8');
     res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
