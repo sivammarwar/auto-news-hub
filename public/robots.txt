@@ -1,7 +1,6 @@
 # ── Allow all good crawlers ───────────────────────────────────────────────────
 User-agent: *
 Allow: /
-
 # Block admin pages from being indexed
 Disallow: /admin-panel
 Disallow: /admin-login
@@ -35,5 +34,5 @@ Disallow: /admin-login
 User-agent: Bingbot
 Allow: /
 
-# ── Sitemap — update yourdomain.com to your actual Vercel domain ──────────────
-Sitemap: https://auto-news-hub.vercel.app/api/sitemap.xml
+# ── Sitemap ───────────────────────────────────────────────────────────────────
+Sitemap: https://www.hiddenhistoryfacts.com/sitemap.xml
