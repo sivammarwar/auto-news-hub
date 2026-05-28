@@ -2,10 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Article } from '@/types/article';
 
-// Explicit column list — guarantees raw_content is always fetched.
-// Avoids the silent issue where select('*') + a type without a field
-// causes that field to be undefined in the component.
-const FIELDS = 'id, created_at, updated_at, title, source_url, source_name, summary, raw_content, category, score, image_url, published_date, is_published, is_draft, admin_notes';
+const FIELDS = 'id, created_at, updated_at, title, source_url, source_name, summary, raw_content, category, score, image_url, published_date, is_published, is_draft, admin_notes, slug';
 
 export function useArticles(category?: string, limit = 50) {
   return useQuery<Article[]>({
@@ -26,7 +23,7 @@ export function useArticles(category?: string, limit = 50) {
       if (error) throw error;
       return (data as Article[]) ?? [];
     },
-    staleTime: 5 * 60 * 1000, // cache 5 min — saves Supabase bandwidth
+    staleTime: 5 * 60 * 1000,
   });
 }
 
@@ -34,17 +31,37 @@ export function useArticle(id: string) {
   return useQuery<Article | null>({
     queryKey: ['article', id],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('articles')
-        .select(FIELDS)
-        .eq('id', parseInt(id, 10))
-        .eq('is_published', true)   // ← only fetch published articles
-        .single();
+      if (!id) return null;
 
-      // PGRST116 = no rows found (article doesn't exist or isn't published yet)
-      if (error?.code === 'PGRST116') return null;
-      if (error) throw error;
-      return data as Article;
+      const numericId = parseInt(id, 10);
+      const isNumeric = !isNaN(numericId) && String(numericId) === id;
+
+      if (isNumeric) {
+        // Legacy numeric ID path — old URLs like /article/123
+        const { data, error } = await supabase
+          .from('articles')
+          .select(FIELDS)
+          .eq('id', numericId)
+          .eq('is_published', true)
+          .single();
+
+        if (error?.code === 'PGRST116') return null;
+        if (error) throw error;
+        return data as Article;
+
+      } else {
+        // Slug path — new URLs like /article/polish-officer-charges-german-tank
+        const { data, error } = await supabase
+          .from('articles')
+          .select(FIELDS)
+          .eq('slug', id)
+          .eq('is_published', true)
+          .single();
+
+        if (error?.code === 'PGRST116') return null;
+        if (error) throw error;
+        return data as Article;
+      }
     },
     enabled: !!id,
     staleTime: 10 * 60 * 1000,
